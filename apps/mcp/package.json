@@ -1,0 +1,16 @@
+{
+  "name": "@northstar/mcp",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "MCP server over the platform API (stdio) — same API, same role checks",
+  "scripts": {
+    "start": "tsx src/index.ts",
+    "typecheck": "tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.32.2",
+    "@northstar/shared": "0.1.0",
+    "zod": "^4.1.0"
+  }
+}

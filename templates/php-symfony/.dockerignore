@@ -1,0 +1,9 @@
+.git
+.github
+infra
+tests
+vendor
+var
+*.md
+Dockerfile
+.dockerignore

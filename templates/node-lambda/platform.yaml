@@ -1,0 +1,15 @@
+# platform.yaml - the service manifest (architecture 4.2). The platform reads it to register
+# the service, route its alerts and show it in the dashboard. The scaffolder fills in
+# service, team, owner and cost-centre when a repo is created from this template.
+service: hello-node-lambda
+team: cargo
+owner: cargo-lead@northstar.example
+cost-centre: CC-1002
+template: node-lambda@1.0
+language: node22
+framework: none
+flavour: lambda-api@1.5
+environments: [dev, test, prod]
+runtime: nodejs22.x
+data-classification: internal
+health-check: /health

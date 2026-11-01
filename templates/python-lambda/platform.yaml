@@ -1,0 +1,15 @@
+# platform.yaml - the service manifest (architecture 4.2). The platform reads it to register
+# the service, route its alerts and show it in the dashboard. The scaffolder fills in
+# service, team, owner and cost-centre when a repo is created from this template.
+service: hello-python-lambda
+team: payments
+owner: payments-lead@northstar.example
+cost-centre: CC-1001
+template: python-lambda@1.0
+language: python3.12
+framework: none
+flavour: lambda-api@1.5
+environments: [dev, test, prod]
+runtime: python3.12
+data-classification: internal
+health-check: /health

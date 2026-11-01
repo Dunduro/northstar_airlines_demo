@@ -1,0 +1,15 @@
+# platform.yaml - the service manifest (architecture 4.2). The platform reads it to register
+# the service, route its alerts and show it in the dashboard. The scaffolder fills in
+# service, team, owner and cost-centre when a repo is created from this template.
+service: hello-python-api
+team: cargo
+owner: cargo-lead@northstar.example
+cost-centre: CC-1002
+template: python-fastapi@1.0
+language: python3.12
+framework: fastapi
+flavour: ecs-service@2.4
+environments: [dev, test, prod]
+size: small
+data-classification: internal
+health-check: /health

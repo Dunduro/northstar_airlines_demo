@@ -1,0 +1,15 @@
+{
+  "name": "hello-node-lambda",
+  "version": "0.1.0",
+  "private": true,
+  "description": "NorthStar paved-road starter: Node 22 on the lambda-api golden path",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "lint": "node --check src/handler.js && node --check src/log.js",
+    "test": "node --test",
+    "invoke": "node scripts/invoke.js events/health.json"
+  }
+}

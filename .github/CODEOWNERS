@@ -1,0 +1,11 @@
+# Changes to the estate need platform review; guardrails, identity, backups and decisions
+# also need security. Enforced with branch protection on main.
+*                               @northstar/platform
+/terraform/                     @northstar/platform
+/terraform/policies/            @northstar/platform @northstar/security
+/terraform/org/                 @northstar/platform @northstar/security
+/terraform/backup/              @northstar/platform @northstar/security
+/terraform/registry/            @northstar/platform
+/.github/workflows/             @northstar/platform @northstar/security
+/docs/adr/                      @northstar/platform @northstar/security
+/docs/runbooks/                 @northstar/platform @northstar/security

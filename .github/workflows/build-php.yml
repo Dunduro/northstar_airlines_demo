@@ -1,0 +1,179 @@
+# Platform build workflow for PHP services (template: php-symfony). Image only: PHP on
+# lambda-api (provided.al2023 + a Bref layer) is supported by the module but not templated.
+# In production this lives in northstar/platform-workflows and is released as tags; teams call
+#   uses: northstar/platform-workflows/.github/workflows/build-php.yml@v3
+#
+# What the team gets without writing it: lint + test, an immutable artifact (image digest for
+# ecs-service), an SBOM, a vulnerability scan with a policy gate
+# (critical findings with a fix available fail the build BEFORE anything is published), and
+# the artifact reference as an output for reusable-deploy.yml.
+#
+# Publishing: only on `publish: true` (the template sets it for pushes to main). The job then
+# assumes `northstar-artifact-publisher` in the shared-services account; that role trusts only
+# the platform build workflows at a release tag, from main:
+#   repo:northstar/*:ref:refs/heads/main:job_workflow_ref:northstar/platform-workflows/.github/workflows/build-*.yml@refs/tags/v*
+# so a team's own YAML can build what it likes, but cannot push to the artifact store.
+name: build-php
+
+on:
+  workflow_call:
+    inputs:
+      php-version:
+        type: string
+        default: "8.3"
+      working-directory:
+        type: string
+        default: "."
+      version:
+        description: Artifact version (semver). Empty = 0.1.<run number>.
+        type: string
+        default: ""
+      publish:
+        description: Push the artifact to the artifact store (true on main only)
+        type: boolean
+        default: false
+      platforms:
+        description: Image platforms (ecs-service defaults to ARM64/Graviton)
+        type: string
+        default: linux/arm64
+      artifact-account-id:
+        description: shared-services account (ECR + artifact bucket)
+        type: string
+        default: "100000000004"
+      artifact-bucket:
+        type: string
+        default: northstar-artifacts
+      aws-region:
+        type: string
+        default: me-central-1
+    outputs:
+      artifact:
+        description: What to deploy - <repo>:<version>@sha256:<digest>
+        value: ${{ jobs.package.outputs.artifact }}
+      version:
+        value: ${{ jobs.test.outputs.version }}
+
+permissions:
+  contents: read
+  id-token: write
+  security-events: write
+
+jobs:
+  test:
+    name: lint + test
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    defaults:
+      run:
+        working-directory: ${{ inputs.working-directory }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ inputs.php-version }}
+          tools: composer:v2
+          coverage: none
+      - run: composer validate --strict
+      - run: composer install --no-interaction --no-progress --prefer-dist
+      - name: lint (php -l on every file)
+        run: find src public bin -name '*.php' -print0 | xargs -0 -n1 php -l > /dev/null
+      - run: composer run-script test
+      - id: version
+        env:
+          VERSION: ${{ inputs.version }}
+        run: echo "version=${VERSION:-0.1.${GITHUB_RUN_NUMBER}}" >> "$GITHUB_OUTPUT"
+
+  package:
+    name: package, scan, publish
+    needs: test
+    runs-on: ubuntu-latest
+    outputs:
+      artifact: ${{ steps.image-ref.outputs.artifact }}
+    env:
+      NAME: ${{ github.event.repository.name }}
+      VERSION: ${{ needs.test.outputs.version }}
+      REGISTRY: ${{ inputs.artifact-account-id }}.dkr.ecr.${{ inputs.aws-region }}.amazonaws.com
+    defaults:
+      run:
+        working-directory: ${{ inputs.working-directory }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build image (local, for scanning)
+        uses: docker/build-push-action@v6
+        with:
+          context: ${{ inputs.working-directory }}
+          platforms: ${{ inputs.platforms }}
+          load: true
+          tags: local/${{ env.NAME }}:${{ env.VERSION }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # ---- supply chain: SBOM + vulnerability gate (same for both) -----------------------
+      - name: SBOM (CycloneDX)
+        uses: anchore/sbom-action@v0
+        with:
+          image: local/${{ env.NAME }}:${{ env.VERSION }}
+          format: cyclonedx-json
+          output-file: sbom.cdx.json
+          artifact-name: sbom-${{ env.NAME }}-${{ env.VERSION }}.cdx.json
+
+      - name: Vulnerability scan - policy gate (fails on fixable critical findings)
+        id: scan
+        uses: anchore/scan-action@v6
+        with:
+          sbom: sbom.cdx.json
+          fail-build: true
+          severity-cutoff: critical
+          only-fixed: true
+          output-format: sarif
+
+      - name: Upload scan results to code scanning
+        if: always() && steps.scan.outputs.sarif != ''
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: ${{ steps.scan.outputs.sarif }}
+          category: build-php
+
+      # ---- publish (main only) -----------------------------------------------------------
+      - if: inputs.publish
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::${{ inputs.artifact-account-id }}:role/northstar-artifact-publisher
+          role-session-name: build-${{ github.run_id }}
+          aws-region: ${{ inputs.aws-region }}
+
+      - if: inputs.publish
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Push image (same build, from cache)
+        id: push
+        if: inputs.publish
+        uses: docker/build-push-action@v6
+        with:
+          context: ${{ inputs.working-directory }}
+          platforms: ${{ inputs.platforms }}
+          push: true
+          tags: |
+            ${{ env.REGISTRY }}/${{ env.NAME }}:${{ env.VERSION }}
+            ${{ env.REGISTRY }}/${{ env.NAME }}:sha-${{ github.sha }}
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.version=${{ env.VERSION }}
+          provenance: mode=max
+          sbom: true
+          cache-from: type=gha
+
+      - name: Image reference (pinned by digest)
+        id: image-ref
+        if: inputs.publish
+        env:
+          DIGEST: ${{ steps.push.outputs.digest }}
+        run: |
+          echo "artifact=${REGISTRY}/${NAME}:${VERSION}@${DIGEST}" >> "$GITHUB_OUTPUT"
+          echo "### Image: \`${REGISTRY}/${NAME}:${VERSION}@${DIGEST}\`" >> "$GITHUB_STEP_SUMMARY"

@@ -1,0 +1,39 @@
+# Every PR: lint, test, build and scan the bundle (nothing is published).
+# Every push to main: the same, then publish the bundle and deploy it to dev.
+# There is no build or deploy logic in this repo - it lives in the platform workflows, so
+# fixes and new checks reach every team with one release.
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  build:
+    uses: northstar/platform-workflows/.github/workflows/build-python.yml@v3
+    with:
+      python-version: "3.12"
+      package: lambda-zip
+      publish: ${{ github.event_name == 'push' }}
+    permissions:
+      contents: read
+      id-token: write
+      security-events: write
+
+  deploy-dev:
+    if: github.event_name == 'push'
+    needs: build
+    uses: northstar/platform-workflows/.github/workflows/reusable-deploy.yml@v3
+    with:
+      environment: dev
+      account-id: ${{ vars.AWS_ACCOUNT_ID_DEV }}
+      artifact: ${{ needs.build.outputs.artifact }}
+    permissions:
+      contents: read
+      id-token: write
+    secrets: inherit

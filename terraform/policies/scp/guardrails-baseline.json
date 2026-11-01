@@ -1,0 +1,72 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "DenyLeavingTheOrganization",
+      "Effect": "Deny",
+      "Action": "organizations:LeaveOrganization",
+      "Resource": "*"
+    },
+    {
+      "Sid": "DenyRootUser",
+      "Effect": "Deny",
+      "Action": "*",
+      "Resource": "*",
+      "Condition": {
+        "StringLike": {
+          "aws:PrincipalArn": "arn:aws:iam::*:root"
+        }
+      }
+    },
+    {
+      "Sid": "ProtectCloudTrail",
+      "Effect": "Deny",
+      "Action": [
+        "cloudtrail:StopLogging",
+        "cloudtrail:DeleteTrail",
+        "cloudtrail:UpdateTrail",
+        "cloudtrail:PutEventSelectors"
+      ],
+      "Resource": "*",
+      "Condition": {
+        "ArnNotLike": {
+          "aws:PrincipalArn": [
+            "arn:aws:iam::*:role/AWSControlTowerExecution",
+            "arn:aws:iam::*:role/northstar-platform-baseline"
+          ]
+        }
+      }
+    },
+    {
+      "Sid": "ProtectConfig",
+      "Effect": "Deny",
+      "Action": [
+        "config:StopConfigurationRecorder",
+        "config:DeleteConfigurationRecorder",
+        "config:DeleteDeliveryChannel",
+        "config:DeleteRetentionConfiguration",
+        "config:DeleteConfigurationAggregator"
+      ],
+      "Resource": "*",
+      "Condition": {
+        "ArnNotLike": {
+          "aws:PrincipalArn": [
+            "arn:aws:iam::*:role/AWSControlTowerExecution",
+            "arn:aws:iam::*:role/northstar-platform-baseline"
+          ]
+        }
+      }
+    },
+    {
+      "Sid": "ProtectS3AccountPublicAccessBlock",
+      "Effect": "Deny",
+      "Action": "s3:PutAccountPublicAccessBlock",
+      "Resource": "*",
+      "Condition": {
+        "ArnNotLike": {
+          "aws:PrincipalArn": "arn:aws:iam::*:role/northstar-platform-baseline"
+        }
+      }
+    }
+  ]
+}

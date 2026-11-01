@@ -1,0 +1,109 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "DenyLongLivedIamCredentials",
+      "Effect": "Deny",
+      "Action": [
+        "iam:CreateUser",
+        "iam:CreateAccessKey",
+        "iam:CreateLoginProfile"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "ProtectPlatformRoles",
+      "Effect": "Deny",
+      "Action": [
+        "iam:UpdateAssumeRolePolicy",
+        "iam:DeleteRole",
+        "iam:AttachRolePolicy",
+        "iam:DetachRolePolicy",
+        "iam:PutRolePolicy",
+        "iam:DeleteRolePolicy",
+        "iam:PutRolePermissionsBoundary",
+        "iam:DeleteRolePermissionsBoundary"
+      ],
+      "Resource": [
+        "arn:aws:iam::*:role/northstar-deploy",
+        "arn:aws:iam::*:role/northstar-platform-*",
+        "arn:aws:iam::*:role/northstar-backup"
+      ],
+      "Condition": {
+        "ArnNotLike": {
+          "aws:PrincipalArn": "arn:aws:iam::*:role/northstar-platform-baseline"
+        }
+      }
+    },
+    {
+      "Sid": "ProtectOidcProvider",
+      "Effect": "Deny",
+      "Action": [
+        "iam:DeleteOpenIDConnectProvider",
+        "iam:UpdateOpenIDConnectProviderThumbprint",
+        "iam:AddClientIDToOpenIDConnectProvider"
+      ],
+      "Resource": "*",
+      "Condition": {
+        "ArnNotLike": {
+          "aws:PrincipalArn": "arn:aws:iam::*:role/northstar-platform-baseline"
+        }
+      }
+    },
+    {
+      "Sid": "ProtectSecurityTooling",
+      "Effect": "Deny",
+      "Action": [
+        "guardduty:DeleteDetector",
+        "guardduty:DisassociateFromMasterAccount",
+        "guardduty:DisassociateFromAdministratorAccount",
+        "securityhub:DisableSecurityHub",
+        "securityhub:DisassociateFromMasterAccount",
+        "securityhub:DisassociateFromAdministratorAccount",
+        "access-analyzer:DeleteAnalyzer",
+        "ec2:DisableEbsEncryptionByDefault"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "DenyKmsKeyDeletion",
+      "Effect": "Deny",
+      "Action": "kms:ScheduleKeyDeletion",
+      "Resource": "*",
+      "Condition": {
+        "ArnNotLike": {
+          "aws:PrincipalArn": "arn:aws:iam::*:role/northstar-platform-baseline"
+        }
+      }
+    },
+    {
+      "Sid": "ProtectBackups",
+      "Effect": "Deny",
+      "Action": [
+        "backup:DeleteBackupVault",
+        "backup:DeleteRecoveryPoint",
+        "backup:UpdateRecoveryPointLifecycle",
+        "backup:PutBackupVaultAccessPolicy",
+        "backup:DeleteBackupVaultAccessPolicy",
+        "backup:DeleteBackupVaultLockConfiguration"
+      ],
+      "Resource": "*",
+      "Condition": {
+        "ArnNotLike": {
+          "aws:PrincipalArn": "arn:aws:iam::*:role/northstar-platform-baseline"
+        }
+      }
+    },
+    {
+      "Sid": "RequireImdsV2",
+      "Effect": "Deny",
+      "Action": "ec2:RunInstances",
+      "Resource": "arn:aws:ec2:*:*:instance/*",
+      "Condition": {
+        "StringNotEquals": {
+          "ec2:MetadataHttpTokens": "required"
+        }
+      }
+    }
+  ]
+}

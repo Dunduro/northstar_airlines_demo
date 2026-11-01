@@ -1,0 +1,9 @@
+**/bin
+**/obj
+.git
+.github
+infra
+tests
+*.md
+Dockerfile
+.dockerignore

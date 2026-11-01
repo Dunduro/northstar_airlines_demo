@@ -1,0 +1,181 @@
+# Account registry — the single source of intent for the estate.
+# One entry per AWS account. Terraform (org/, baseline/) and the platform simulator read this file.
+# Adding an entry = a new account gets its OU, baseline and access; nothing is configured by hand.
+# Account IDs are fictitious (PoC).
+
+accounts:
+  # --- Core accounts (platform + security) ---
+  - id: "100000000001"
+    name: security-audit
+    environment: core
+    team: security
+    owner: security-lead@northstar.example
+    ou: Security
+    flavours: []
+    baseline_version: "2.3.0"
+  - id: "100000000002"
+    name: log-archive
+    environment: core
+    team: security
+    owner: security-lead@northstar.example
+    ou: Security
+    flavours: []
+    baseline_version: "2.3.0"
+  # Central backup vault (Vault Lock, compliance mode). Security OU, not Infrastructure: the
+  # people who run workloads must not be able to delete the copy that protects them from it.
+  - id: "100000000005"
+    name: backup
+    environment: core
+    team: security
+    owner: security-lead@northstar.example
+    ou: Security
+    flavours: []
+    baseline_version: "2.3.0"
+  - id: "100000000003"
+    name: network
+    environment: core
+    team: platform
+    owner: platform-lead@northstar.example
+    ou: Infrastructure
+    flavours: []
+    baseline_version: "2.3.0"
+  - id: "100000000004"
+    name: shared-services
+    environment: core
+    team: platform
+    owner: platform-lead@northstar.example
+    ou: Infrastructure
+    flavours: [ecs-service]
+    baseline_version: "2.3.0"
+  # --- payments ---
+  - id: "100000000100"
+    name: payments-sandbox
+    environment: sandbox
+    team: payments
+    owner: payments-lead@northstar.example
+    ou: Sandbox
+    flavours: [ecs-service]
+    baseline_version: "2.3.0"
+  - id: "100000000101"
+    name: payments-dev
+    environment: dev
+    team: payments
+    owner: payments-lead@northstar.example
+    ou: Workloads/Dev
+    flavours: [ecs-service]
+    baseline_version: "2.3.0"
+  - id: "100000000102"
+    name: payments-test
+    environment: test
+    team: payments
+    owner: payments-lead@northstar.example
+    ou: Workloads/Test
+    flavours: [ecs-service]
+    baseline_version: "2.3.0"
+  - id: "100000000103"
+    name: payments-prod
+    environment: prod
+    team: payments
+    owner: payments-lead@northstar.example
+    ou: Workloads/Prod
+    flavours: [ecs-service]
+    baseline_version: "2.3.0"
+  # --- cargo ---
+  - id: "100000000200"
+    name: cargo-sandbox
+    environment: sandbox
+    team: cargo
+    owner: cargo-lead@northstar.example
+    ou: Sandbox
+    flavours: [lambda-api]
+    baseline_version: "2.1.0"
+  - id: "100000000201"
+    name: cargo-dev
+    environment: dev
+    team: cargo
+    owner: cargo-lead@northstar.example
+    ou: Workloads/Dev
+    flavours: [lambda-api]
+    baseline_version: "2.3.0"
+  - id: "100000000202"
+    name: cargo-test
+    environment: test
+    team: cargo
+    owner: cargo-lead@northstar.example
+    ou: Workloads/Test
+    flavours: [lambda-api]
+    baseline_version: "2.3.0"
+  - id: "100000000203"
+    name: cargo-prod
+    environment: prod
+    team: cargo
+    owner: cargo-lead@northstar.example
+    ou: Workloads/Prod
+    flavours: [lambda-api]
+    baseline_version: "2.3.0"
+  # --- crew ---
+  - id: "100000000300"
+    name: crew-sandbox
+    environment: sandbox
+    team: crew
+    owner: crew-lead@northstar.example
+    ou: Sandbox
+    flavours: [ecs-service, static-site]
+    baseline_version: "2.3.0"
+  - id: "100000000301"
+    name: crew-dev
+    environment: dev
+    team: crew
+    owner: crew-lead@northstar.example
+    ou: Workloads/Dev
+    flavours: [ecs-service, static-site]
+    baseline_version: "2.3.0"
+  - id: "100000000302"
+    name: crew-test
+    environment: test
+    team: crew
+    owner: crew-lead@northstar.example
+    ou: Workloads/Test
+    flavours: [ecs-service, static-site]
+    baseline_version: "2.1.0"
+  - id: "100000000303"
+    name: crew-prod
+    environment: prod
+    team: crew
+    owner: crew-lead@northstar.example
+    ou: Workloads/Prod
+    flavours: [ecs-service, static-site]
+    baseline_version: "2.3.0"
+  # --- loyalty ---
+  - id: "100000000400"
+    name: loyalty-sandbox
+    environment: sandbox
+    team: loyalty
+    owner: loyalty-lead@northstar.example
+    ou: Sandbox
+    flavours: [lambda-api, static-site]
+    baseline_version: "1.9.0"
+  - id: "100000000401"
+    name: loyalty-dev
+    environment: dev
+    team: loyalty
+    owner: loyalty-lead@northstar.example
+    ou: Workloads/Dev
+    flavours: [lambda-api, static-site]
+    baseline_version: "2.3.0"
+  - id: "100000000402"
+    name: loyalty-test
+    environment: test
+    team: loyalty
+    owner: loyalty-lead@northstar.example
+    ou: Workloads/Test
+    flavours: [lambda-api, static-site]
+    baseline_version: "2.3.0"
+  - id: "100000000403"
+    name: loyalty-prod
+    environment: prod
+    team: loyalty
+    owner: loyalty-lead@northstar.example
+    ou: Workloads/Prod
+    flavours: [lambda-api, static-site]
+    baseline_version: "2.3.0"

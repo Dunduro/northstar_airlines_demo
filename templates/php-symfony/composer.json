@@ -1,0 +1,32 @@
+{
+    "name": "northstar/hello-php-api",
+    "description": "NorthStar paved-road starter: PHP 8.3 + Symfony micro-kernel on nginx + php-fpm, ecs-service golden path",
+    "type": "project",
+    "license": "proprietary",
+    "require": {
+        "php": ">=8.3",
+        "ext-ctype": "*",
+        "ext-iconv": "*",
+        "symfony/console": "7.4.*",
+        "symfony/framework-bundle": "7.4.*",
+        "symfony/runtime": "7.4.*"
+    },
+    "autoload": {
+        "psr-4": {
+            "App\\": "src/"
+        }
+    },
+    "config": {
+        "allow-plugins": {
+            "symfony/runtime": true
+        },
+        "optimize-autoloader": true,
+        "platform": {
+            "php": "8.3.0"
+        },
+        "sort-packages": true
+    },
+    "scripts": {
+        "test": "php tests/smoke.php"
+    }
+}

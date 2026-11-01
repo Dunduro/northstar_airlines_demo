@@ -1,0 +1,9 @@
+accounts:
+  - id: "200000000101"
+    name: rogue-dev
+    environment: dev
+    team: rogue
+    owner: rogue@northstar.example
+    ou: Workloads/Staging
+    flavours: []
+    baseline_version: "2.3.0"

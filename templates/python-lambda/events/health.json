@@ -1,0 +1,7 @@
+{
+  "version": "2.0",
+  "routeKey": "$default",
+  "rawPath": "/health",
+  "headers": { "x-correlation-id": "local-123" },
+  "requestContext": { "http": { "method": "GET", "path": "/health" }, "requestId": "local-req-1" }
+}

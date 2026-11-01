@@ -1,0 +1,112 @@
+# Apply the account baseline to ONE account. This is the only workflow the platform dashboard
+# dispatches (ADR-008, ADR-014):
+#   - "Re-apply baseline" on an account (e.g. after drift)
+#   - "Retry failed targets" of a halted rollout (rollout_id set; the result is attributed to it)
+# Same path as a rollout: reviewed code from main, the platform pipeline role, the Prod
+# environment approval for prod/core accounts, the result reported back HMAC-signed.
+name: apply-baseline
+
+on:
+  workflow_dispatch:
+    inputs:
+      account:
+        description: Account name from terraform/registry/accounts.yaml
+        required: true
+        type: string
+      reason:
+        description: Why (shown in the run; e.g. "re-apply requested from the dashboard by priya")
+        required: true
+        type: string
+      rollout_id:
+        description: Rollout this apply retries (empty for a plain re-apply)
+        required: false
+        default: ""
+        type: string
+
+run-name: apply-baseline ${{ inputs.account }} — ${{ inputs.reason }}
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: apply-baseline-${{ inputs.account }} # never two applies on one account's state at once
+  cancel-in-progress: false
+
+jobs:
+  resolve:
+    runs-on: ubuntu-latest
+    outputs:
+      id: ${{ steps.find.outputs.id }}
+      wave: ${{ steps.find.outputs.wave }}
+      baseline_version: ${{ steps.find.outputs.baseline_version }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: find
+        env:
+          ACCOUNT: ${{ inputs.account }}
+        run: |
+          entry=$(yq -o=json -I=0 '.accounts[] | select(.name == strenv(ACCOUNT) and .ou != "Suspended")' terraform/registry/accounts.yaml)
+          [ -n "$entry" ] || { echo "::error::${ACCOUNT} is not an active account in the registry"; exit 1; }
+          {
+            echo "id=$(jq -r .id <<<"$entry")"
+            echo "wave=$(jq -r 'if .environment == "core" then "prod" else .environment end' <<<"$entry")"
+            echo "baseline_version=$(jq -r .baseline_version <<<"$entry")"
+          } >> "$GITHUB_OUTPUT"
+
+  apply:
+    name: apply ${{ inputs.account }}
+    needs: resolve
+    runs-on: ubuntu-latest
+    environment: lz-${{ needs.resolve.outputs.wave }} # prod and core need the same approval as a rollout
+    env:
+      ACCOUNT_NAME: ${{ inputs.account }}
+      RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.PLATFORM_PIPELINE_ROLE_ARN }}
+          aws-region: me-central-1
+
+      - uses: ./.github/actions/terraform-init
+        with:
+          working-directory: terraform/baseline
+          state-key: accounts/${{ inputs.account }}.tfstate
+
+      - name: terraform apply (baseline role in the target account)
+        id: apply
+        continue-on-error: true # report the failure, then fail the run below
+        working-directory: terraform/baseline
+        run: |
+          terraform apply -input=false -auto-approve \
+            -var account_name="$ACCOUNT_NAME" \
+            -var pipeline_role_name=northstar-platform-baseline 2>&1 | tee apply.log
+          exit "${PIPESTATUS[0]}"
+
+      - name: Report apply.result to the platform API
+        if: always()
+        continue-on-error: true
+        env:
+          PLATFORM_API_URL: ${{ vars.PLATFORM_API_URL }}
+          PLATFORM_WEBHOOK_SECRET: ${{ secrets.PLATFORM_WEBHOOK_SECRET }}
+          OUTCOME: ${{ steps.apply.outcome }}
+          ROLLOUT_ID: ${{ inputs.rollout_id }}
+        run: |
+          status=$([ "$OUTCOME" = "success" ] && echo succeeded || echo failed)
+          error=""
+          if [ "$status" = "failed" ]; then error=$(grep -m1 -A2 'Error:' terraform/baseline/apply.log | tr '\n' ' ' || true); fi
+          jq -n --arg accountId "${{ needs.resolve.outputs.id }}" --arg runUrl "$RUN_URL" --arg ref "$GITHUB_SHA" \
+                --arg status "$status" --arg error "$error" --arg rolloutId "$ROLLOUT_ID" \
+                --arg version "${{ needs.resolve.outputs.baseline_version }}" '
+            {type: "apply.result", accountId: $accountId, runUrl: $runUrl, ref: $ref, status: $status, baselineVersion: $version}
+            + (if $rolloutId != "" then {rolloutId: $rolloutId} else {} end)
+            + (if $error != "" then {error: $error} else {} end)' > event.json
+          .github/scripts/post-event.sh event.json
+
+      - name: Fail the run when the apply failed
+        if: steps.apply.outcome != 'success'
+        run: |
+          echo "::error::${ACCOUNT_NAME}: apply failed"
+          exit 1

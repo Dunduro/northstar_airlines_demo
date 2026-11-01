@@ -1,0 +1,15 @@
+{
+  "name": "@northstar/simulator",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Plays the outside world (pipeline, HR, AWS Config) against the platform API",
+  "scripts": {
+    "sim": "tsx src/cli.ts",
+    "typecheck": "tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "@northstar/shared": "0.1.0",
+    "yaml": "^2.6.1"
+  }
+}

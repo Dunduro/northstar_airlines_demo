@@ -1,0 +1,132 @@
+# On merge: roll the change out in waves, sandbox -> dev -> test -> prod.
+#
+# The PIPELINE is the orchestrator (ADR-014): this workflow decides when a wave starts and
+# whether it halts. The platform API only mirrors what it reports — rollout.started (the plan),
+# one apply.result per account, wave.completed per wave — so if the dashboard is down, the
+# rollout still runs and still halts. Reporting never fails the pipeline.
+#
+# Each wave applies its accounts in parallel and halts when failures exceed its threshold
+# (2 %, any failure in prod). A halted wave never starts the next one. Prod waits for an
+# approval (GitHub environment "lz-prod": required reviewers + wait timer as the soak period).
+#
+# Resume: after the dashboard's retry (apply-baseline.yml per failed account) turned a halted
+# wave green, the platform dispatches this workflow with rollout_id + resume_after, and the
+# remaining waves run — gated exactly as before.
+name: rollout-waves
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - terraform/modules/account-baseline/**
+      - terraform/baseline/**
+      - terraform/registry/accounts.yaml
+  workflow_dispatch:
+    inputs:
+      change_title:
+        description: Title of the change (defaults to the head commit message)
+        required: false
+        default: ""
+      rollout_id:
+        description: Existing rollout to resume (set by the platform after a successful retry)
+        required: false
+        default: ""
+      resume_after:
+        description: Resume after this wave (sandbox | dev | test); empty = run every wave
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: rollout-waves # one estate-wide rollout at a time
+  cancel-in-progress: false
+
+jobs:
+  start:
+    runs-on: ubuntu-latest
+    outputs:
+      rollout_id: ${{ steps.id.outputs.rollout_id }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: id
+        run: echo "rollout_id=${{ inputs.rollout_id || format('ro-{0}', github.run_id) }}" >> "$GITHUB_OUTPUT"
+      # A new account is a registry PR: on merge this run applies its baseline in its wave and
+      # the dashboard learns about it here — nobody registers the account by hand.
+      - name: Report registry.sync (new and changed accounts appear on the dashboard)
+        if: inputs.rollout_id == ''
+        continue-on-error: true
+        env:
+          PLATFORM_API_URL: ${{ vars.PLATFORM_API_URL }}
+          PLATFORM_WEBHOOK_SECRET: ${{ secrets.PLATFORM_WEBHOOK_SECRET }}
+          REF: ${{ github.sha }}
+        run: |
+          yq -o=json -I=0 '{"type": "registry.sync", "ref": strenv(REF), "accounts": [.accounts[] | {
+              "id": (.id | tostring), "name": .name, "environment": .environment, "team": .team, "owner": .owner,
+              "ou": .ou, "flavours": (.flavours // []), "baseline_version": .baseline_version}]}' \
+            terraform/registry/accounts.yaml > registry.json
+          .github/scripts/post-event.sh registry.json
+
+      - name: Report rollout.started (the plan the dashboard mirrors)
+        if: inputs.rollout_id == ''
+        continue-on-error: true
+        env:
+          PLATFORM_API_URL: ${{ vars.PLATFORM_API_URL }}
+          PLATFORM_WEBHOOK_SECRET: ${{ secrets.PLATFORM_WEBHOOK_SECRET }}
+          TITLE: ${{ inputs.change_title || github.event.head_commit.message }}
+        run: |
+          waves='[]'
+          for wave in sandbox dev test prod; do
+            threshold=$([ "$wave" = prod ] && echo 0 || echo 0.02)
+            targets=$(.github/scripts/wave-accounts.sh "$wave")
+            waves=$(jq -c --arg n "$wave" --argjson th "$threshold" --argjson t "$targets" \
+              '. + (if ($t | length) > 0 then [{name: $n, failureThreshold: $th, targets: $t}] else [] end)' <<<"$waves")
+          done
+          jq -n --arg id "${{ steps.id.outputs.rollout_id }}" --arg ref "${{ github.sha }}" --arg title "${TITLE%%$'\n'*}" \
+            --argjson waves "$waves" \
+            '{type: "rollout.started", rolloutId: $id, change: {ref: $ref, title: $title}, waves: $waves}' > event.json
+          .github/scripts/post-event.sh event.json
+
+  # A wave runs when no earlier wave failed (halted) and it is not before the resume point.
+  # !failure() lets a wave run after earlier waves that were skipped on resume.
+  sandbox:
+    needs: start
+    if: ${{ !failure() && !cancelled() && inputs.resume_after == '' }}
+    uses: ./.github/workflows/apply-wave.yml
+    with:
+      wave: sandbox
+      failure_threshold: "0.02"
+      rollout_id: ${{ needs.start.outputs.rollout_id }}
+    secrets: inherit
+
+  dev:
+    needs: [start, sandbox]
+    if: ${{ !failure() && !cancelled() && inputs.resume_after != 'dev' && inputs.resume_after != 'test' }}
+    uses: ./.github/workflows/apply-wave.yml
+    with:
+      wave: dev
+      failure_threshold: "0.02"
+      rollout_id: ${{ needs.start.outputs.rollout_id }}
+    secrets: inherit
+
+  test:
+    needs: [start, dev]
+    if: ${{ !failure() && !cancelled() && inputs.resume_after != 'test' }}
+    uses: ./.github/workflows/apply-wave.yml
+    with:
+      wave: test
+      failure_threshold: "0.02"
+      rollout_id: ${{ needs.start.outputs.rollout_id }}
+    secrets: inherit
+
+  prod:
+    needs: [start, test]
+    if: ${{ !failure() && !cancelled() }}
+    uses: ./.github/workflows/apply-wave.yml
+    with:
+      wave: prod
+      failure_threshold: "0" # any Prod failure halts
+      rollout_id: ${{ needs.start.outputs.rollout_id }}
+    secrets: inherit

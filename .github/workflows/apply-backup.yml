@@ -1,0 +1,167 @@
+# Apply terraform/backup — the central, Vault-Locked vault, the restore testing plan and the
+# isolated restore VPC — in the Backup account (ADR-016). One account, one state, so this is its
+# own workflow rather than a wave: the estate rollout (rollout-waves.yml) stays the baseline's.
+#
+# HIGH RISK. The vault's lock is in COMPLIANCE mode: once its grace period (lock_grace_days)
+# has passed, nobody — the platform team, AWS support, root — can remove the lock, shorten
+# retention or delete a recovery point early. A wrong change to the lock is permanent. Hence:
+#   - plan, then apply EXACTLY that plan (artifact), never a fresh plan at apply time
+#   - the apply job waits for the protected GitHub environment "lz-backup" (required reviewers
+#     from security, self-review prevented, deployment branch: main only)
+#   - a plan that changes the lock (or deletes/replaces the vault) is refused unless a person
+#     runs this workflow by hand with confirm_vault_lock_change: true
+#   - one apply at a time (concurrency group below)
+name: apply-backup
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - terraform/backup/**
+      - terraform/registry/accounts.yaml # the root reads the Backup account (id, tags) from it
+  workflow_dispatch:
+    inputs:
+      reason:
+        description: Why (shown in the run)
+        required: true
+        type: string
+      confirm_vault_lock_change:
+        description: The plan changes the Vault Lock and I accept that, after the grace period, it is irreversible
+        required: false
+        default: false
+        type: boolean
+
+run-name: apply-backup — ${{ inputs.reason || github.event.head_commit.message }}
+
+permissions:
+  contents: read
+  id-token: write # GitHub OIDC -> AWS; there are no AWS keys anywhere
+
+concurrency:
+  group: apply-backup # never two plans/applies on the Backup account's state at once
+  cancel-in-progress: false
+
+env:
+  WORKDIR: terraform/backup
+  STATE_KEY: backup/terraform.tfstate
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      changes: ${{ steps.plan.outputs.changes }}
+      lock_changes: ${{ steps.summary.outputs.lock_changes }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.PLATFORM_PIPELINE_ROLE_ARN }}
+          aws-region: me-central-1
+
+      - uses: ./.github/actions/terraform-init
+        with:
+          working-directory: ${{ env.WORKDIR }}
+          state-key: ${{ env.STATE_KEY }}
+
+      # A saved plan carries its variables, so it is planned with the role that will apply it
+      # (northstar-platform-baseline). PR plans use the read-only northstar-platform-plan role.
+      - name: terraform plan (baseline role in the Backup account)
+        id: plan
+        working-directory: ${{ env.WORKDIR }}
+        run: |
+          set +e
+          terraform plan -input=false -detailed-exitcode -out=tfplan \
+            -var pipeline_role_name=northstar-platform-baseline
+          code=$?
+          set -e
+          case "$code" in
+            0) echo "changes=false" >> "$GITHUB_OUTPUT" ;;
+            2) echo "changes=true" >> "$GITHUB_OUTPUT" ;;
+            *) echo "::error::terraform plan failed"; exit 1 ;;
+          esac
+          terraform show -json tfplan > plan.json
+
+      - name: Plan summary
+        id: summary
+        run: .github/scripts/backup-plan-summary.sh "$WORKDIR/plan.json" "Backup account plan" >> "$GITHUB_OUTPUT"
+
+      - name: Refuse a Vault Lock change unless explicitly confirmed
+        if: steps.summary.outputs.lock_changes != '0'
+        env:
+          CONFIRMED: ${{ inputs.confirm_vault_lock_change && 'true' || 'false' }}
+          ADDRESSES: ${{ steps.summary.outputs.lock_addresses }}
+        run: |
+          if [ "$CONFIRMED" != "true" ]; then
+            echo "::error::The plan changes the Vault Lock (${ADDRESSES}). After the grace period this is irreversible. Re-run apply-backup manually with confirm_vault_lock_change: true after review."
+            echo "**Refused:** Vault Lock change without \`confirm_vault_lock_change: true\`." >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          echo "::warning::Vault Lock change confirmed by ${GITHUB_ACTOR}: ${ADDRESSES}"
+          echo "**Vault Lock change confirmed** by \`${GITHUB_ACTOR}\`." >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        if: steps.plan.outputs.changes == 'true'
+        with:
+          name: backup-plan
+          path: |
+            ${{ env.WORKDIR }}/tfplan
+            ${{ env.WORKDIR }}/plan.json
+          retention-days: 7 # a plan may hold sensitive values; it is only needed until applied
+
+  apply:
+    needs: plan
+    if: needs.plan.outputs.changes == 'true'
+    runs-on: ubuntu-latest
+    # Protection rules live in GitHub: required reviewers (security), no self-review, main only.
+    # The reviewer approves the plan shown in the plan job's summary; this job applies that file.
+    environment: lz-backup
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: backup-plan
+          path: ${{ env.WORKDIR }}
+
+      # Defence in depth: check the exact file about to be applied, not just the plan job's output.
+      - name: Re-check the plan file for Vault Lock changes
+        env:
+          CONFIRMED: ${{ inputs.confirm_vault_lock_change && 'true' || 'false' }}
+        run: |
+          lock_changes=$(GITHUB_STEP_SUMMARY='' .github/scripts/backup-plan-summary.sh "$WORKDIR/plan.json" "" | sed -n 's/^lock_changes=//p')
+          if [ "$lock_changes" != "0" ] && [ "$CONFIRMED" != "true" ]; then
+            echo "::error::The plan file changes the Vault Lock without confirmation; not applying."
+            exit 1
+          fi
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.PLATFORM_PIPELINE_ROLE_ARN }}
+          aws-region: me-central-1
+
+      - uses: ./.github/actions/terraform-init
+        with:
+          working-directory: ${{ env.WORKDIR }}
+          state-key: ${{ env.STATE_KEY }}
+
+      # Applying a saved plan: Terraform refuses if the state changed since it was planned
+      # ("saved plan is stale"), so what was approved is what is applied, or nothing is.
+      - name: terraform apply (the approved plan)
+        working-directory: ${{ env.WORKDIR }}
+        run: terraform apply -input=false tfplan
+
+      - name: Apply summary
+        if: always()
+        env:
+          OUTCOME: ${{ job.status }}
+        run: |
+          {
+            echo "### Backup account apply: ${OUTCOME}"
+            echo
+            echo "Applied the plan from this run's plan job (artifact \`backup-plan\`), commit \`${GITHUB_SHA::7}\`."
+            echo
+            echo "> [!WARNING]"
+            echo "> The central vault's Vault Lock is in compliance mode: after its grace period it cannot be"
+            echo "> removed or loosened by anyone. Lock changes need \`confirm_vault_lock_change: true\`."
+          } >> "$GITHUB_STEP_SUMMARY"

@@ -1,0 +1,15 @@
+# platform.yaml - the service manifest (architecture 4.2). The platform reads it to register
+# the service, route its alerts and show it in the dashboard. The scaffolder fills in
+# service, team, owner and cost-centre when a repo is created from this template.
+service: hello-php-api
+team: loyalty
+owner: loyalty-lead@northstar.example
+cost-centre: CC-1004
+template: php-symfony@1.0
+language: php8.3
+framework: symfony-php-fpm
+flavour: ecs-service@2.4
+environments: [dev, test, prod]
+size: small
+data-classification: internal
+health-check: /health

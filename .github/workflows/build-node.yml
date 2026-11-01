@@ -1,0 +1,212 @@
+# Platform build workflow for Node.js services (templates: node-api, node-lambda).
+# In production this lives in northstar/platform-workflows and is released as tags; teams call
+#   uses: northstar/platform-workflows/.github/workflows/build-node.yml@v3
+#
+# What the team gets without writing it: lint + test, an immutable artifact (image digest for
+# ecs-service, versioned zip for lambda-api), an SBOM, a vulnerability scan with a policy gate
+# (critical findings with a fix available fail the build BEFORE anything is published), and
+# the artifact reference as an output for reusable-deploy.yml.
+#
+# Publishing: only on `publish: true` (the template sets it for pushes to main). The job then
+# assumes `northstar-artifact-publisher` in the shared-services account; that role trusts only
+# the platform build workflows at a release tag, from main:
+#   repo:northstar/*:ref:refs/heads/main:job_workflow_ref:northstar/platform-workflows/.github/workflows/build-*.yml@refs/tags/v*
+# so a team's own YAML can build what it likes, but cannot push to the artifact store.
+name: build-node
+
+on:
+  workflow_call:
+    inputs:
+      node-version:
+        type: string
+        default: "22"
+      working-directory:
+        type: string
+        default: "."
+      package:
+        description: image (ecs-service) or lambda-zip (lambda-api)
+        type: string
+        default: image
+      version:
+        description: Artifact version (semver). Empty = 0.1.<run number>.
+        type: string
+        default: ""
+      publish:
+        description: Push the artifact to the artifact store (true on main only)
+        type: boolean
+        default: false
+      platforms:
+        description: Image platforms (ecs-service defaults to ARM64/Graviton)
+        type: string
+        default: linux/arm64
+      artifact-account-id:
+        description: shared-services account (ECR + artifact bucket)
+        type: string
+        default: "100000000004"
+      artifact-bucket:
+        type: string
+        default: northstar-artifacts
+      aws-region:
+        type: string
+        default: me-central-1
+    outputs:
+      artifact:
+        description: What to deploy - <repo>:<version>@sha256:<digest> or s3://<bucket>/<name>/<version>.zip
+        value: ${{ jobs.package.outputs.artifact }}
+      version:
+        value: ${{ jobs.test.outputs.version }}
+
+permissions:
+  contents: read
+  id-token: write
+  security-events: write
+
+jobs:
+  test:
+    name: lint + test
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    defaults:
+      run:
+        working-directory: ${{ inputs.working-directory }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ inputs.node-version }}
+          cache: npm
+          cache-dependency-path: ${{ inputs.working-directory }}/package-lock.json
+      - run: npm ci
+      - run: npm run lint --if-present
+      - run: npm test
+      - run: npm run build --if-present
+      - id: version
+        env:
+          VERSION: ${{ inputs.version }}
+        run: echo "version=${VERSION:-0.1.${GITHUB_RUN_NUMBER}}" >> "$GITHUB_OUTPUT"
+
+  package:
+    name: package, scan, publish
+    needs: test
+    runs-on: ubuntu-latest
+    outputs:
+      artifact: ${{ steps.image-ref.outputs.artifact || steps.zip-ref.outputs.artifact }}
+    env:
+      NAME: ${{ github.event.repository.name }}
+      VERSION: ${{ needs.test.outputs.version }}
+      REGISTRY: ${{ inputs.artifact-account-id }}.dkr.ecr.${{ inputs.aws-region }}.amazonaws.com
+    defaults:
+      run:
+        working-directory: ${{ inputs.working-directory }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # ---- image (ecs-service) ----------------------------------------------------------
+      - if: inputs.package == 'image'
+        uses: docker/setup-qemu-action@v3
+      - if: inputs.package == 'image'
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build image (local, for scanning)
+        if: inputs.package == 'image'
+        uses: docker/build-push-action@v6
+        with:
+          context: ${{ inputs.working-directory }}
+          platforms: ${{ inputs.platforms }}
+          load: true
+          tags: local/${{ env.NAME }}:${{ env.VERSION }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # ---- zip (lambda-api) ------------------------------------------------------------
+      - if: inputs.package == 'lambda-zip'
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ inputs.node-version }}
+      - name: Build bundle (production dependencies only)
+        if: inputs.package == 'lambda-zip'
+        run: |
+          npm ci --omit=dev
+          mkdir -p dist
+          contents=(src package.json)
+          [ -d node_modules ] && contents+=(node_modules)
+          zip -qr "dist/${NAME}-${VERSION}.zip" "${contents[@]}"
+
+      # ---- supply chain: SBOM + vulnerability gate (same for both) -----------------------
+      - name: SBOM (CycloneDX)
+        uses: anchore/sbom-action@v0
+        with:
+          image: ${{ inputs.package == 'image' && format('local/{0}:{1}', env.NAME, env.VERSION) || '' }}
+          path: ${{ inputs.package == 'lambda-zip' && inputs.working-directory || '' }}
+          format: cyclonedx-json
+          output-file: sbom.cdx.json
+          artifact-name: sbom-${{ env.NAME }}-${{ env.VERSION }}.cdx.json
+
+      - name: Vulnerability scan - policy gate (fails on fixable critical findings)
+        id: scan
+        uses: anchore/scan-action@v6
+        with:
+          sbom: sbom.cdx.json
+          fail-build: true
+          severity-cutoff: critical
+          only-fixed: true
+          output-format: sarif
+
+      - name: Upload scan results to code scanning
+        if: always() && steps.scan.outputs.sarif != ''
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: ${{ steps.scan.outputs.sarif }}
+          category: build-node
+
+      # ---- publish (main only) -----------------------------------------------------------
+      - if: inputs.publish
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::${{ inputs.artifact-account-id }}:role/northstar-artifact-publisher
+          role-session-name: build-${{ github.run_id }}
+          aws-region: ${{ inputs.aws-region }}
+
+      - if: inputs.publish && inputs.package == 'image'
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Push image (same build, from cache)
+        id: push
+        if: inputs.publish && inputs.package == 'image'
+        uses: docker/build-push-action@v6
+        with:
+          context: ${{ inputs.working-directory }}
+          platforms: ${{ inputs.platforms }}
+          push: true
+          tags: |
+            ${{ env.REGISTRY }}/${{ env.NAME }}:${{ env.VERSION }}
+            ${{ env.REGISTRY }}/${{ env.NAME }}:sha-${{ github.sha }}
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.version=${{ env.VERSION }}
+          provenance: mode=max
+          sbom: true
+          cache-from: type=gha
+
+      - name: Image reference (pinned by digest)
+        id: image-ref
+        if: inputs.publish && inputs.package == 'image'
+        env:
+          DIGEST: ${{ steps.push.outputs.digest }}
+        run: |
+          echo "artifact=${REGISTRY}/${NAME}:${VERSION}@${DIGEST}" >> "$GITHUB_OUTPUT"
+          echo "### Image: \`${REGISTRY}/${NAME}:${VERSION}@${DIGEST}\`" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload bundle (immutable - an existing version is never overwritten)
+        id: zip-ref
+        if: inputs.publish && inputs.package == 'lambda-zip'
+        env:
+          BUCKET: ${{ inputs.artifact-bucket }}
+        run: |
+          key="${NAME}/${VERSION}.zip"
+          aws s3api put-object --bucket "$BUCKET" --key "$key" --body "dist/${NAME}-${VERSION}.zip" \
+            --if-none-match '*' --checksum-algorithm SHA256 > /dev/null
+          echo "artifact=s3://${BUCKET}/${key}" >> "$GITHUB_OUTPUT"
+          echo "### Bundle: \`s3://${BUCKET}/${key}\`" >> "$GITHUB_STEP_SUMMARY"

@@ -1,0 +1,15 @@
+# platform.yaml - the service manifest (architecture 4.2). The platform reads it to register
+# the service, route its alerts and show it in the dashboard. The scaffolder fills in
+# service, team, owner and cost-centre when a repo is created from this template.
+service: hello-node-api
+team: payments
+owner: payments-lead@northstar.example
+cost-centre: CC-1001
+template: node-api@1.0
+language: node22
+framework: fastify
+flavour: ecs-service@2.4
+environments: [dev, test, prod]
+size: small
+data-classification: internal
+health-check: /health

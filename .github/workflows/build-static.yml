@@ -1,0 +1,138 @@
+# Platform build workflow for static frontends (template: react-static, golden path static-site).
+# In production this lives in northstar/platform-workflows and is released as tags; teams call
+#   uses: northstar/platform-workflows/.github/workflows/build-static.yml@v3
+#
+# Build once: the bundle is uploaded ONCE to an immutable, versioned prefix in the artifact
+# store, s3://<artifact-bucket>/<repo>/releases/<version>/. reusable-deploy.yml copies that
+# prefix into each environment's site bucket and points CloudFront at it, so Dev, Test and
+# Prod serve byte-identical files. An existing version is never overwritten.
+#
+# Publishing uses the same `northstar-artifact-publisher` role as the other build workflows
+# (trusts only platform build workflows at a release tag, from main).
+name: build-static
+
+on:
+  workflow_call:
+    inputs:
+      node-version:
+        type: string
+        default: "22"
+      working-directory:
+        type: string
+        default: "."
+      output-directory:
+        description: Build output, relative to working-directory
+        type: string
+        default: dist
+      version:
+        description: Bundle version (semver). Empty = 0.1.<run number>.
+        type: string
+        default: ""
+      publish:
+        description: Upload the bundle to the artifact store (true on main only)
+        type: boolean
+        default: false
+      artifact-account-id:
+        type: string
+        default: "100000000004"
+      artifact-bucket:
+        type: string
+        default: northstar-artifacts
+      aws-region:
+        type: string
+        default: me-central-1
+    outputs:
+      artifact:
+        description: Versioned bundle prefix - s3://<bucket>/<repo>/releases/<version>/
+        value: ${{ jobs.build.outputs.artifact }}
+      version:
+        value: ${{ jobs.build.outputs.version }}
+
+permissions:
+  contents: read
+  id-token: write
+  security-events: write
+
+jobs:
+  build:
+    name: lint, test, bundle, scan, publish
+    runs-on: ubuntu-latest
+    outputs:
+      artifact: ${{ steps.upload.outputs.artifact }}
+      version: ${{ steps.version.outputs.version }}
+    env:
+      NAME: ${{ github.event.repository.name }}
+    defaults:
+      run:
+        working-directory: ${{ inputs.working-directory }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ inputs.node-version }}
+          cache: npm
+          cache-dependency-path: ${{ inputs.working-directory }}/package-lock.json
+      - run: npm ci
+      - run: npm run lint --if-present
+      - run: npm test --if-present
+      - id: version
+        env:
+          VERSION: ${{ inputs.version }}
+        run: echo "version=${VERSION:-0.1.${GITHUB_RUN_NUMBER}}" >> "$GITHUB_OUTPUT"
+      - name: Build bundle
+        env:
+          VITE_APP_VERSION: ${{ steps.version.outputs.version }}
+        run: npm run build
+
+      - name: SBOM (CycloneDX, from the lockfile)
+        uses: anchore/sbom-action@v0
+        with:
+          path: ${{ inputs.working-directory }}
+          format: cyclonedx-json
+          output-file: sbom.cdx.json
+          artifact-name: sbom-${{ env.NAME }}-${{ steps.version.outputs.version }}.cdx.json
+
+      - name: Vulnerability scan - policy gate (fails on fixable critical findings)
+        id: scan
+        uses: anchore/scan-action@v6
+        with:
+          sbom: sbom.cdx.json
+          fail-build: true
+          severity-cutoff: critical
+          only-fixed: true
+          output-format: sarif
+
+      - name: Upload scan results to code scanning
+        if: always() && steps.scan.outputs.sarif != ''
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: ${{ steps.scan.outputs.sarif }}
+          category: build-static
+
+      - if: inputs.publish
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::${{ inputs.artifact-account-id }}:role/northstar-artifact-publisher
+          role-session-name: build-${{ github.run_id }}
+          aws-region: ${{ inputs.aws-region }}
+
+      - name: Upload bundle to its versioned prefix (immutable)
+        id: upload
+        if: inputs.publish
+        env:
+          BUCKET: ${{ inputs.artifact-bucket }}
+          OUT: ${{ inputs.output-directory }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          prefix="${NAME}/releases/${VERSION}/"
+          existing=$(aws s3api list-objects-v2 --bucket "$BUCKET" --prefix "$prefix" --max-items 1 --query 'KeyCount' --output text)
+          if [ "$existing" != "0" ] && [ "$existing" != "None" ]; then
+            echo "::error::${prefix} already exists - versions are immutable, bump the version"; exit 1
+          fi
+          # Hashed assets are cacheable forever; index.html must always be revalidated.
+          aws s3 sync "$OUT" "s3://${BUCKET}/${prefix}" --only-show-errors \
+            --exclude index.html --cache-control "public, max-age=31536000, immutable"
+          aws s3 cp "$OUT/index.html" "s3://${BUCKET}/${prefix}index.html" --only-show-errors \
+            --cache-control "no-cache"
+          echo "artifact=s3://${BUCKET}/${prefix}" >> "$GITHUB_OUTPUT"
+          echo "### Bundle: \`s3://${BUCKET}/${prefix}\`" >> "$GITHUB_STEP_SUMMARY"

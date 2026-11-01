@@ -1,0 +1,3229 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "NorthStar Platform API",
+    "version": "1.0.0",
+    "description": "Thin, async API of the NorthStar landing-zone platform. Event endpoints answer 202 and are processed by workers. The platform never writes to AWS: actions become GitHub workflow_dispatch runs."
+  },
+  "components": {
+    "securitySchemes": {
+      "bearerAuth": {
+        "type": "http",
+        "scheme": "bearer",
+        "bearerFormat": "JWT (Entra ID; simulated in the PoC)"
+      },
+      "hmac": {
+        "type": "apiKey",
+        "in": "header",
+        "name": "x-northstar-signature",
+        "description": "sha256=<HMAC of the raw body>"
+      }
+    },
+    "schemas": {}
+  },
+  "paths": {
+    "/health": {
+      "get": {
+        "tags": [
+          "ops"
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/v1/events/pipeline": {
+      "post": {
+        "summary": "Pipeline result: registry sync, plan, apply, drift, Config findings, rollout started / wave completed",
+        "tags": [
+          "events"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "anyOf": [
+                  {
+                    "type": "object",
+                    "required": [
+                      "type",
+                      "ref",
+                      "accounts"
+                    ],
+                    "properties": {
+                      "type": {
+                        "type": "string",
+                        "enum": [
+                          "registry.sync"
+                        ]
+                      },
+                      "ref": {
+                        "type": "string"
+                      },
+                      "accounts": {
+                        "type": "array",
+                        "items": {
+                          "type": "object",
+                          "required": [
+                            "id",
+                            "name",
+                            "environment",
+                            "team",
+                            "owner",
+                            "ou",
+                            "flavours",
+                            "baseline_version"
+                          ],
+                          "properties": {
+                            "id": {
+                              "pattern": "^[0-9]{12}$",
+                              "type": "string"
+                            },
+                            "name": {
+                              "type": "string"
+                            },
+                            "environment": {
+                              "type": "string",
+                              "enum": [
+                                "sandbox",
+                                "dev",
+                                "test",
+                                "prod",
+                                "core"
+                              ]
+                            },
+                            "team": {
+                              "type": "string"
+                            },
+                            "owner": {
+                              "type": "string"
+                            },
+                            "ou": {
+                              "type": "string"
+                            },
+                            "flavours": {
+                              "type": "array",
+                              "items": {
+                                "type": "string"
+                              }
+                            },
+                            "baseline_version": {
+                              "type": "string"
+                            }
+                          }
+                        }
+                      }
+                    }
+                  },
+                  {
+                    "type": "object",
+                    "required": [
+                      "type",
+                      "accountId",
+                      "runUrl",
+                      "summary",
+                      "policyFindings"
+                    ],
+                    "properties": {
+                      "type": {
+                        "type": "string",
+                        "enum": [
+                          "plan.result"
+                        ]
+                      },
+                      "accountId": {
+                        "type": "string"
+                      },
+                      "runUrl": {
+                        "type": "string"
+                      },
+                      "summary": {
+                        "type": "object",
+                        "required": [
+                          "add",
+                          "change",
+                          "destroy"
+                        ],
+                        "properties": {
+                          "add": {
+                            "type": "integer"
+                          },
+                          "change": {
+                            "type": "integer"
+                          },
+                          "destroy": {
+                            "type": "integer"
+                          }
+                        }
+                      },
+                      "policyFindings": {
+                        "description": "Checkov / OPA results on the plan",
+                        "type": "array",
+                        "items": {
+                          "type": "object",
+                          "required": [
+                            "rule",
+                            "severity",
+                            "resource"
+                          ],
+                          "properties": {
+                            "rule": {
+                              "type": "string"
+                            },
+                            "severity": {
+                              "type": "string",
+                              "enum": [
+                                "low",
+                                "medium",
+                                "high",
+                                "critical"
+                              ]
+                            },
+                            "resource": {
+                              "type": "string"
+                            },
+                            "link": {
+                              "type": "string"
+                            }
+                          }
+                        }
+                      }
+                    }
+                  },
+                  {
+                    "type": "object",
+                    "required": [
+                      "type",
+                      "accountId",
+                      "runUrl",
+                      "ref",
+                      "status"
+                    ],
+                    "properties": {
+                      "type": {
+                        "type": "string",
+                        "enum": [
+                          "apply.result"
+                        ]
+                      },
+                      "accountId": {
+                        "type": "string"
+                      },
+                      "runUrl": {
+                        "type": "string"
+                      },
+                      "ref": {
+                        "type": "string"
+                      },
+                      "status": {
+                        "type": "string",
+                        "enum": [
+                          "succeeded",
+                          "failed"
+                        ]
+                      },
+                      "error": {
+                        "type": "string"
+                      },
+                      "rolloutId": {
+                        "type": "string"
+                      },
+                      "baselineVersion": {
+                        "type": "string"
+                      },
+                      "moduleVersions": {
+                        "type": "object",
+                        "additionalProperties": {
+                          "type": "string"
+                        }
+                      },
+                      "scope": {
+                        "type": "string",
+                        "enum": [
+                          "baseline",
+                          "deploy"
+                        ]
+                      }
+                    }
+                  },
+                  {
+                    "type": "object",
+                    "required": [
+                      "type",
+                      "runUrl",
+                      "accounts"
+                    ],
+                    "properties": {
+                      "type": {
+                        "type": "string",
+                        "enum": [
+                          "drift.result"
+                        ]
+                      },
+                      "runUrl": {
+                        "type": "string"
+                      },
+                      "accounts": {
+                        "type": "array",
+                        "items": {
+                          "type": "object",
+                          "required": [
+                            "accountId",
+                            "drifted",
+                            "resources"
+                          ],
+                          "properties": {
+                            "accountId": {
+                              "type": "string"
+                            },
+                            "drifted": {
+                              "type": "boolean"
+                            },
+                            "resources": {
+                              "type": "array",
+                              "items": {
+                                "description": "Terraform address, e.g. aws_s3_bucket.logs",
+                                "type": "string"
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  },
+                  {
+                    "type": "object",
+                    "required": [
+                      "type",
+                      "accountId",
+                      "findings"
+                    ],
+                    "properties": {
+                      "type": {
+                        "type": "string",
+                        "enum": [
+                          "config.findings"
+                        ]
+                      },
+                      "accountId": {
+                        "type": "string"
+                      },
+                      "findings": {
+                        "description": "AWS Config / Security Hub, normalised",
+                        "type": "array",
+                        "items": {
+                          "type": "object",
+                          "required": [
+                            "rule",
+                            "severity",
+                            "resource"
+                          ],
+                          "properties": {
+                            "rule": {
+                              "type": "string"
+                            },
+                            "severity": {
+                              "type": "string",
+                              "enum": [
+                                "low",
+                                "medium",
+                                "high",
+                                "critical"
+                              ]
+                            },
+                            "resource": {
+                              "type": "string"
+                            },
+                            "link": {
+                              "type": "string"
+                            }
+                          }
+                        }
+                      }
+                    }
+                  },
+                  {
+                    "type": "object",
+                    "required": [
+                      "type",
+                      "rolloutId",
+                      "change",
+                      "waves"
+                    ],
+                    "properties": {
+                      "type": {
+                        "type": "string",
+                        "enum": [
+                          "rollout.started"
+                        ]
+                      },
+                      "rolloutId": {
+                        "type": "string"
+                      },
+                      "change": {
+                        "type": "object",
+                        "required": [
+                          "ref",
+                          "title"
+                        ],
+                        "properties": {
+                          "ref": {
+                            "type": "string"
+                          },
+                          "title": {
+                            "type": "string"
+                          }
+                        }
+                      },
+                      "waves": {
+                        "type": "array",
+                        "items": {
+                          "type": "object",
+                          "required": [
+                            "name",
+                            "failureThreshold",
+                            "targets"
+                          ],
+                          "properties": {
+                            "name": {
+                              "type": "string",
+                              "enum": [
+                                "sandbox",
+                                "dev",
+                                "test",
+                                "prod"
+                              ]
+                            },
+                            "failureThreshold": {
+                              "minimum": 0,
+                              "maximum": 1,
+                              "type": "number"
+                            },
+                            "targets": {
+                              "type": "array",
+                              "items": {
+                                "type": "object",
+                                "required": [
+                                  "targetId",
+                                  "name"
+                                ],
+                                "properties": {
+                                  "targetId": {
+                                    "type": "string"
+                                  },
+                                  "name": {
+                                    "type": "string"
+                                  }
+                                }
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  },
+                  {
+                    "type": "object",
+                    "required": [
+                      "type",
+                      "rolloutId",
+                      "wave",
+                      "status",
+                      "failed",
+                      "total"
+                    ],
+                    "properties": {
+                      "type": {
+                        "type": "string",
+                        "enum": [
+                          "wave.completed"
+                        ]
+                      },
+                      "rolloutId": {
+                        "type": "string"
+                      },
+                      "wave": {
+                        "type": "string",
+                        "enum": [
+                          "sandbox",
+                          "dev",
+                          "test",
+                          "prod"
+                        ]
+                      },
+                      "status": {
+                        "type": "string",
+                        "enum": [
+                          "succeeded",
+                          "halted"
+                        ]
+                      },
+                      "failed": {
+                        "type": "integer"
+                      },
+                      "total": {
+                        "type": "integer"
+                      }
+                    }
+                  }
+                ]
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "hmac": []
+          }
+        ],
+        "responses": {
+          "202": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "accepted",
+                    "eventId"
+                  ],
+                  "properties": {
+                    "accepted": {
+                      "type": "boolean",
+                      "enum": [
+                        true
+                      ]
+                    },
+                    "eventId": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/events/membership": {
+      "post": {
+        "summary": "HR / Entra membership change: joiner, mover, leaver",
+        "tags": [
+          "events"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "type",
+                  "person"
+                ],
+                "properties": {
+                  "type": {
+                    "type": "string",
+                    "enum": [
+                      "joiner",
+                      "mover",
+                      "leaver"
+                    ]
+                  },
+                  "person": {
+                    "type": "object",
+                    "required": [
+                      "id"
+                    ],
+                    "properties": {
+                      "id": {
+                        "pattern": "^[a-z0-9.-]+$",
+                        "type": "string"
+                      },
+                      "name": {
+                        "type": "string"
+                      },
+                      "email": {
+                        "type": "string"
+                      },
+                      "team": {
+                        "type": "string"
+                      },
+                      "role": {
+                        "type": "string",
+                        "enum": [
+                          "developer",
+                          "lead",
+                          "platform-engineer",
+                          "security"
+                        ]
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "hmac": []
+          }
+        ],
+        "responses": {
+          "202": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "accepted",
+                    "eventId"
+                  ],
+                  "properties": {
+                    "accepted": {
+                      "type": "boolean",
+                      "enum": [
+                        true
+                      ]
+                    },
+                    "eventId": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/overview": {
+      "get": {
+        "summary": "Heatmap environment x team, % compliant, 30-day trend",
+        "tags": [
+          "read"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "percentCompliant",
+                    "totalTargets",
+                    "heatmap",
+                    "trend",
+                    "critical",
+                    "openHighOrCritical",
+                    "expiringExceptions"
+                  ],
+                  "properties": {
+                    "percentCompliant": {
+                      "type": "number"
+                    },
+                    "totalTargets": {
+                      "type": "integer"
+                    },
+                    "heatmap": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "required": [
+                          "environment",
+                          "team",
+                          "total",
+                          "compliant"
+                        ],
+                        "properties": {
+                          "environment": {
+                            "type": "string",
+                            "enum": [
+                              "sandbox",
+                              "dev",
+                              "test",
+                              "prod",
+                              "core"
+                            ]
+                          },
+                          "team": {
+                            "type": "string"
+                          },
+                          "total": {
+                            "type": "integer"
+                          },
+                          "compliant": {
+                            "type": "integer"
+                          }
+                        }
+                      }
+                    },
+                    "trend": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "required": [
+                          "day",
+                          "percentCompliant"
+                        ],
+                        "properties": {
+                          "day": {
+                            "type": "string"
+                          },
+                          "percentCompliant": {
+                            "type": "number"
+                          }
+                        }
+                      }
+                    },
+                    "critical": {
+                      "description": "The 8 most urgent open high/critical findings (a shortlist; the count is openHighOrCritical)",
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "required": [
+                          "id",
+                          "targetId",
+                          "source",
+                          "rule",
+                          "severity",
+                          "resource",
+                          "status",
+                          "firstSeen",
+                          "lastSeen",
+                          "link",
+                          "targetName",
+                          "team"
+                        ],
+                        "properties": {
+                          "id": {
+                            "type": "string"
+                          },
+                          "targetId": {
+                            "type": "string"
+                          },
+                          "source": {
+                            "type": "string",
+                            "enum": [
+                              "drift",
+                              "policy",
+                              "config",
+                              "platform"
+                            ]
+                          },
+                          "rule": {
+                            "type": "string"
+                          },
+                          "severity": {
+                            "type": "string",
+                            "enum": [
+                              "low",
+                              "medium",
+                              "high",
+                              "critical"
+                            ]
+                          },
+                          "resource": {
+                            "type": "string"
+                          },
+                          "status": {
+                            "type": "string",
+                            "enum": [
+                              "open",
+                              "resolved",
+                              "waived"
+                            ]
+                          },
+                          "firstSeen": {
+                            "format": "date-time",
+                            "type": "string"
+                          },
+                          "lastSeen": {
+                            "format": "date-time",
+                            "type": "string"
+                          },
+                          "link": {
+                            "description": "Link to the original (plan run, Config rule, …)",
+                            "type": "string"
+                          },
+                          "targetName": {
+                            "type": "string"
+                          },
+                          "team": {
+                            "type": "string"
+                          }
+                        }
+                      }
+                    },
+                    "openHighOrCritical": {
+                      "description": "All open (not waived) high/critical findings",
+                      "type": "integer"
+                    },
+                    "expiringExceptions": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "required": [
+                          "id",
+                          "targetId",
+                          "rule",
+                          "owner",
+                          "reason",
+                          "compensatingControl",
+                          "expiresAt"
+                        ],
+                        "properties": {
+                          "id": {
+                            "type": "string"
+                          },
+                          "targetId": {
+                            "type": "string"
+                          },
+                          "rule": {
+                            "type": "string"
+                          },
+                          "owner": {
+                            "type": "string"
+                          },
+                          "reason": {
+                            "type": "string"
+                          },
+                          "compensatingControl": {
+                            "type": "string"
+                          },
+                          "expiresAt": {
+                            "format": "date-time",
+                            "type": "string"
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/targets": {
+      "get": {
+        "summary": "Accounts with compliance status",
+        "tags": [
+          "read"
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "enum": [
+                "sandbox",
+                "dev",
+                "test",
+                "prod",
+                "core"
+              ]
+            },
+            "in": "query",
+            "name": "environment",
+            "required": false
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "in": "query",
+            "name": "team",
+            "required": false
+          }
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "required": [
+                      "id",
+                      "name",
+                      "cloud",
+                      "environment",
+                      "team",
+                      "owner",
+                      "ou",
+                      "flavours",
+                      "baselineVersion",
+                      "moduleVersions",
+                      "compliant",
+                      "openFindings",
+                      "highestSeverity"
+                    ],
+                    "properties": {
+                      "id": {
+                        "pattern": "^[0-9]{12}$",
+                        "type": "string"
+                      },
+                      "name": {
+                        "type": "string"
+                      },
+                      "cloud": {
+                        "type": "string",
+                        "enum": [
+                          "aws"
+                        ]
+                      },
+                      "environment": {
+                        "type": "string",
+                        "enum": [
+                          "sandbox",
+                          "dev",
+                          "test",
+                          "prod",
+                          "core"
+                        ]
+                      },
+                      "team": {
+                        "type": "string"
+                      },
+                      "owner": {
+                        "type": "string"
+                      },
+                      "ou": {
+                        "type": "string"
+                      },
+                      "flavours": {
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        }
+                      },
+                      "baselineVersion": {
+                        "type": "string"
+                      },
+                      "moduleVersions": {
+                        "type": "object",
+                        "additionalProperties": {
+                          "type": "string"
+                        }
+                      },
+                      "compliant": {
+                        "type": "boolean"
+                      },
+                      "openFindings": {
+                        "type": "integer"
+                      },
+                      "highestSeverity": {
+                        "type": "string",
+                        "enum": [
+                          "low",
+                          "medium",
+                          "high",
+                          "critical"
+                        ],
+                        "nullable": true
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/targets/{id}": {
+      "get": {
+        "summary": "Account detail: versions, findings by source, exceptions, recent deploys",
+        "tags": [
+          "read"
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "in": "path",
+            "name": "id",
+            "required": true
+          }
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "target",
+                    "findings",
+                    "exceptions",
+                    "recentDeploys",
+                    "consoleUrl"
+                  ],
+                  "properties": {
+                    "target": {
+                      "type": "object",
+                      "required": [
+                        "id",
+                        "name",
+                        "cloud",
+                        "environment",
+                        "team",
+                        "owner",
+                        "ou",
+                        "flavours",
+                        "baselineVersion",
+                        "moduleVersions",
+                        "compliant",
+                        "openFindings",
+                        "highestSeverity"
+                      ],
+                      "properties": {
+                        "id": {
+                          "pattern": "^[0-9]{12}$",
+                          "type": "string"
+                        },
+                        "name": {
+                          "type": "string"
+                        },
+                        "cloud": {
+                          "type": "string",
+                          "enum": [
+                            "aws"
+                          ]
+                        },
+                        "environment": {
+                          "type": "string",
+                          "enum": [
+                            "sandbox",
+                            "dev",
+                            "test",
+                            "prod",
+                            "core"
+                          ]
+                        },
+                        "team": {
+                          "type": "string"
+                        },
+                        "owner": {
+                          "type": "string"
+                        },
+                        "ou": {
+                          "type": "string"
+                        },
+                        "flavours": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          }
+                        },
+                        "baselineVersion": {
+                          "type": "string"
+                        },
+                        "moduleVersions": {
+                          "type": "object",
+                          "additionalProperties": {
+                            "type": "string"
+                          }
+                        },
+                        "compliant": {
+                          "type": "boolean"
+                        },
+                        "openFindings": {
+                          "type": "integer"
+                        },
+                        "highestSeverity": {
+                          "type": "string",
+                          "enum": [
+                            "low",
+                            "medium",
+                            "high",
+                            "critical"
+                          ],
+                          "nullable": true
+                        }
+                      }
+                    },
+                    "findings": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "required": [
+                          "id",
+                          "targetId",
+                          "source",
+                          "rule",
+                          "severity",
+                          "resource",
+                          "status",
+                          "firstSeen",
+                          "lastSeen",
+                          "link"
+                        ],
+                        "properties": {
+                          "id": {
+                            "type": "string"
+                          },
+                          "targetId": {
+                            "type": "string"
+                          },
+                          "source": {
+                            "type": "string",
+                            "enum": [
+                              "drift",
+                              "policy",
+                              "config",
+                              "platform"
+                            ]
+                          },
+                          "rule": {
+                            "type": "string"
+                          },
+                          "severity": {
+                            "type": "string",
+                            "enum": [
+                              "low",
+                              "medium",
+                              "high",
+                              "critical"
+                            ]
+                          },
+                          "resource": {
+                            "type": "string"
+                          },
+                          "status": {
+                            "type": "string",
+                            "enum": [
+                              "open",
+                              "resolved",
+                              "waived"
+                            ]
+                          },
+                          "firstSeen": {
+                            "format": "date-time",
+                            "type": "string"
+                          },
+                          "lastSeen": {
+                            "format": "date-time",
+                            "type": "string"
+                          },
+                          "link": {
+                            "description": "Link to the original (plan run, Config rule, …)",
+                            "type": "string"
+                          }
+                        }
+                      }
+                    },
+                    "exceptions": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "required": [
+                          "id",
+                          "targetId",
+                          "rule",
+                          "owner",
+                          "reason",
+                          "compensatingControl",
+                          "expiresAt"
+                        ],
+                        "properties": {
+                          "id": {
+                            "type": "string"
+                          },
+                          "targetId": {
+                            "type": "string"
+                          },
+                          "rule": {
+                            "type": "string"
+                          },
+                          "owner": {
+                            "type": "string"
+                          },
+                          "reason": {
+                            "type": "string"
+                          },
+                          "compensatingControl": {
+                            "type": "string"
+                          },
+                          "expiresAt": {
+                            "format": "date-time",
+                            "type": "string"
+                          }
+                        }
+                      }
+                    },
+                    "recentDeploys": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "required": [
+                          "at",
+                          "status",
+                          "ref",
+                          "runUrl"
+                        ],
+                        "properties": {
+                          "at": {
+                            "type": "string"
+                          },
+                          "status": {
+                            "type": "string"
+                          },
+                          "ref": {
+                            "type": "string"
+                          },
+                          "runUrl": {
+                            "type": "string"
+                          }
+                        }
+                      }
+                    },
+                    "consoleUrl": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/findings": {
+      "get": {
+        "summary": "Normalised findings from drift, policy checks, AWS Config and platform rules",
+        "tags": [
+          "read"
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "enum": [
+                "low",
+                "medium",
+                "high",
+                "critical"
+              ]
+            },
+            "in": "query",
+            "name": "severity",
+            "required": false
+          },
+          {
+            "schema": {
+              "type": "string",
+              "enum": [
+                "drift",
+                "policy",
+                "config",
+                "platform"
+              ]
+            },
+            "in": "query",
+            "name": "source",
+            "required": false
+          },
+          {
+            "schema": {
+              "type": "string",
+              "enum": [
+                "open",
+                "resolved",
+                "waived"
+              ]
+            },
+            "in": "query",
+            "name": "status",
+            "required": false
+          },
+          {
+            "schema": {
+              "type": "string",
+              "enum": [
+                "sandbox",
+                "dev",
+                "test",
+                "prod",
+                "core"
+              ]
+            },
+            "in": "query",
+            "name": "environment",
+            "required": false
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "in": "query",
+            "name": "team",
+            "required": false
+          }
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "required": [
+                      "id",
+                      "targetId",
+                      "source",
+                      "rule",
+                      "severity",
+                      "resource",
+                      "status",
+                      "firstSeen",
+                      "lastSeen",
+                      "link"
+                    ],
+                    "properties": {
+                      "id": {
+                        "type": "string"
+                      },
+                      "targetId": {
+                        "type": "string"
+                      },
+                      "source": {
+                        "type": "string",
+                        "enum": [
+                          "drift",
+                          "policy",
+                          "config",
+                          "platform"
+                        ]
+                      },
+                      "rule": {
+                        "type": "string"
+                      },
+                      "severity": {
+                        "type": "string",
+                        "enum": [
+                          "low",
+                          "medium",
+                          "high",
+                          "critical"
+                        ]
+                      },
+                      "resource": {
+                        "type": "string"
+                      },
+                      "status": {
+                        "type": "string",
+                        "enum": [
+                          "open",
+                          "resolved",
+                          "waived"
+                        ]
+                      },
+                      "firstSeen": {
+                        "format": "date-time",
+                        "type": "string"
+                      },
+                      "lastSeen": {
+                        "format": "date-time",
+                        "type": "string"
+                      },
+                      "link": {
+                        "description": "Link to the original (plan run, Config rule, …)",
+                        "type": "string"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/targets/{id}/reapply": {
+      "post": {
+        "summary": "Re-apply the baseline. Enqueues a GitHub workflow_dispatch — the app never writes to AWS.",
+        "tags": [
+          "actions"
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "pattern": "^[0-9]{12}$",
+              "type": "string"
+            },
+            "in": "path",
+            "name": "id",
+            "required": true
+          }
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "202": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "accepted",
+                    "eventId"
+                  ],
+                  "properties": {
+                    "accepted": {
+                      "type": "boolean",
+                      "enum": [
+                        true
+                      ]
+                    },
+                    "eventId": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/exceptions": {
+      "get": {
+        "summary": "All registered exceptions, soonest expiry first",
+        "tags": [
+          "exceptions"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "required": [
+                      "id",
+                      "targetId",
+                      "rule",
+                      "owner",
+                      "reason",
+                      "compensatingControl",
+                      "expiresAt"
+                    ],
+                    "properties": {
+                      "id": {
+                        "type": "string"
+                      },
+                      "targetId": {
+                        "type": "string"
+                      },
+                      "rule": {
+                        "type": "string"
+                      },
+                      "owner": {
+                        "type": "string"
+                      },
+                      "reason": {
+                        "type": "string"
+                      },
+                      "compensatingControl": {
+                        "type": "string"
+                      },
+                      "expiresAt": {
+                        "format": "date-time",
+                        "type": "string"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "summary": "Record an exception (admin = security). Production: a PR to the exceptions registry in git (CODEOWNERS = security) mirrored here by the pipeline. An already-expired one waives nothing and re-opens its finding.",
+        "tags": [
+          "exceptions"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "targetId",
+                  "rule",
+                  "owner",
+                  "reason",
+                  "compensatingControl",
+                  "expiresAt"
+                ],
+                "properties": {
+                  "targetId": {
+                    "type": "string"
+                  },
+                  "rule": {
+                    "type": "string"
+                  },
+                  "owner": {
+                    "type": "string"
+                  },
+                  "reason": {
+                    "type": "string"
+                  },
+                  "compensatingControl": {
+                    "type": "string"
+                  },
+                  "expiresAt": {
+                    "format": "date-time",
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "201": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "id",
+                    "targetId",
+                    "rule",
+                    "owner",
+                    "reason",
+                    "compensatingControl",
+                    "expiresAt"
+                  ],
+                  "properties": {
+                    "id": {
+                      "type": "string"
+                    },
+                    "targetId": {
+                      "type": "string"
+                    },
+                    "rule": {
+                      "type": "string"
+                    },
+                    "owner": {
+                      "type": "string"
+                    },
+                    "reason": {
+                      "type": "string"
+                    },
+                    "compensatingControl": {
+                      "type": "string"
+                    },
+                    "expiresAt": {
+                      "format": "date-time",
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/rollouts": {
+      "get": {
+        "summary": "Rollouts, newest first",
+        "tags": [
+          "rollouts"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "required": [
+                      "id",
+                      "change",
+                      "waves",
+                      "status",
+                      "createdAt"
+                    ],
+                    "properties": {
+                      "id": {
+                        "type": "string"
+                      },
+                      "change": {
+                        "type": "object",
+                        "required": [
+                          "ref",
+                          "title"
+                        ],
+                        "properties": {
+                          "ref": {
+                            "type": "string"
+                          },
+                          "title": {
+                            "type": "string"
+                          }
+                        }
+                      },
+                      "waves": {
+                        "type": "array",
+                        "items": {
+                          "type": "object",
+                          "required": [
+                            "name",
+                            "targets",
+                            "failureThreshold",
+                            "status"
+                          ],
+                          "properties": {
+                            "name": {
+                              "type": "string",
+                              "enum": [
+                                "sandbox",
+                                "dev",
+                                "test",
+                                "prod"
+                              ]
+                            },
+                            "targets": {
+                              "type": "array",
+                              "items": {
+                                "type": "object",
+                                "required": [
+                                  "targetId",
+                                  "name",
+                                  "status",
+                                  "attempts"
+                                ],
+                                "properties": {
+                                  "targetId": {
+                                    "type": "string"
+                                  },
+                                  "name": {
+                                    "type": "string"
+                                  },
+                                  "status": {
+                                    "type": "string",
+                                    "enum": [
+                                      "pending",
+                                      "running",
+                                      "succeeded",
+                                      "failed"
+                                    ]
+                                  },
+                                  "error": {
+                                    "type": "string"
+                                  },
+                                  "attempts": {
+                                    "type": "integer"
+                                  }
+                                }
+                              }
+                            },
+                            "failureThreshold": {
+                              "description": "Fraction of targets allowed to fail, e.g. 0.02",
+                              "type": "number"
+                            },
+                            "status": {
+                              "type": "string",
+                              "enum": [
+                                "pending",
+                                "running",
+                                "succeeded",
+                                "halted"
+                              ]
+                            }
+                          }
+                        }
+                      },
+                      "status": {
+                        "type": "string",
+                        "enum": [
+                          "pending",
+                          "running",
+                          "halted",
+                          "succeeded"
+                        ]
+                      },
+                      "createdAt": {
+                        "format": "date-time",
+                        "type": "string"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/rollouts/{id}": {
+      "get": {
+        "summary": "Waves and per-target status",
+        "tags": [
+          "rollouts"
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "in": "path",
+            "name": "id",
+            "required": true
+          }
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "id",
+                    "change",
+                    "waves",
+                    "status",
+                    "createdAt"
+                  ],
+                  "properties": {
+                    "id": {
+                      "type": "string"
+                    },
+                    "change": {
+                      "type": "object",
+                      "required": [
+                        "ref",
+                        "title"
+                      ],
+                      "properties": {
+                        "ref": {
+                          "type": "string"
+                        },
+                        "title": {
+                          "type": "string"
+                        }
+                      }
+                    },
+                    "waves": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "required": [
+                          "name",
+                          "targets",
+                          "failureThreshold",
+                          "status"
+                        ],
+                        "properties": {
+                          "name": {
+                            "type": "string",
+                            "enum": [
+                              "sandbox",
+                              "dev",
+                              "test",
+                              "prod"
+                            ]
+                          },
+                          "targets": {
+                            "type": "array",
+                            "items": {
+                              "type": "object",
+                              "required": [
+                                "targetId",
+                                "name",
+                                "status",
+                                "attempts"
+                              ],
+                              "properties": {
+                                "targetId": {
+                                  "type": "string"
+                                },
+                                "name": {
+                                  "type": "string"
+                                },
+                                "status": {
+                                  "type": "string",
+                                  "enum": [
+                                    "pending",
+                                    "running",
+                                    "succeeded",
+                                    "failed"
+                                  ]
+                                },
+                                "error": {
+                                  "type": "string"
+                                },
+                                "attempts": {
+                                  "type": "integer"
+                                }
+                              }
+                            }
+                          },
+                          "failureThreshold": {
+                            "description": "Fraction of targets allowed to fail, e.g. 0.02",
+                            "type": "number"
+                          },
+                          "status": {
+                            "type": "string",
+                            "enum": [
+                              "pending",
+                              "running",
+                              "succeeded",
+                              "halted"
+                            ]
+                          }
+                        }
+                      }
+                    },
+                    "status": {
+                      "type": "string",
+                      "enum": [
+                        "pending",
+                        "running",
+                        "halted",
+                        "succeeded"
+                      ]
+                    },
+                    "createdAt": {
+                      "format": "date-time",
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/rollouts/{id}/retry": {
+      "post": {
+        "summary": "Retry the failed targets of a halted wave: one apply-baseline.yml workflow_dispatch per target; when they are green the pipeline resumes the remaining waves",
+        "tags": [
+          "rollouts",
+          "actions"
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "in": "path",
+            "name": "id",
+            "required": true
+          }
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "202": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "accepted",
+                    "eventId"
+                  ],
+                  "properties": {
+                    "accepted": {
+                      "type": "boolean",
+                      "enum": [
+                        true
+                      ]
+                    },
+                    "eventId": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/me/access": {
+      "get": {
+        "summary": "My roles per account with IAM Identity Center deep links. The platform shows and links; it never brokers AWS sessions.",
+        "tags": [
+          "access"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "person",
+                    "appRoles",
+                    "accounts",
+                    "note"
+                  ],
+                  "properties": {
+                    "person": {
+                      "type": "object",
+                      "required": [
+                        "id",
+                        "name",
+                        "team"
+                      ],
+                      "properties": {
+                        "id": {
+                          "type": "string"
+                        },
+                        "name": {
+                          "type": "string"
+                        },
+                        "team": {
+                          "type": "string"
+                        }
+                      }
+                    },
+                    "appRoles": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    },
+                    "accounts": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "required": [
+                          "targetId",
+                          "name",
+                          "environment",
+                          "permissionSet",
+                          "launchUrl"
+                        ],
+                        "properties": {
+                          "targetId": {
+                            "type": "string"
+                          },
+                          "name": {
+                            "type": "string"
+                          },
+                          "environment": {
+                            "type": "string",
+                            "enum": [
+                              "sandbox",
+                              "dev",
+                              "test",
+                              "prod",
+                              "core"
+                            ]
+                          },
+                          "permissionSet": {
+                            "type": "string"
+                          },
+                          "launchUrl": {
+                            "description": "IAM Identity Center deep link — the app never brokers sessions",
+                            "type": "string"
+                          }
+                        }
+                      }
+                    },
+                    "note": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/onboarding/{personId}": {
+      "get": {
+        "summary": "Onboarding wizard state (or, for a leaver, every door that was closed)",
+        "tags": [
+          "onboarding"
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "in": "path",
+            "name": "personId",
+            "required": true
+          }
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "person",
+                    "steps",
+                    "closedDoors"
+                  ],
+                  "properties": {
+                    "person": {
+                      "type": "object",
+                      "required": [
+                        "id",
+                        "name",
+                        "email",
+                        "team",
+                        "role",
+                        "status"
+                      ],
+                      "properties": {
+                        "id": {
+                          "type": "string"
+                        },
+                        "name": {
+                          "type": "string"
+                        },
+                        "email": {
+                          "type": "string"
+                        },
+                        "team": {
+                          "type": "string"
+                        },
+                        "role": {
+                          "type": "string",
+                          "enum": [
+                            "developer",
+                            "lead",
+                            "platform-engineer",
+                            "security"
+                          ]
+                        },
+                        "status": {
+                          "type": "string",
+                          "enum": [
+                            "active",
+                            "left"
+                          ]
+                        }
+                      }
+                    },
+                    "steps": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "required": [
+                          "name",
+                          "status"
+                        ],
+                        "properties": {
+                          "name": {
+                            "type": "string",
+                            "enum": [
+                              "sso_login",
+                              "device_key",
+                              "github_link",
+                              "vpn_profile",
+                              "access_review"
+                            ]
+                          },
+                          "status": {
+                            "type": "string",
+                            "enum": [
+                              "todo",
+                              "done"
+                            ]
+                          },
+                          "detail": {
+                            "type": "string"
+                          },
+                          "completedAt": {
+                            "type": "string"
+                          }
+                        }
+                      }
+                    },
+                    "closedDoors": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "required": [
+                          "door",
+                          "action",
+                          "closedAt"
+                        ],
+                        "properties": {
+                          "door": {
+                            "type": "string"
+                          },
+                          "action": {
+                            "type": "string"
+                          },
+                          "closedAt": {
+                            "type": "string"
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "summary": "Submit a wizard step (public SSH key, GitHub username, VPN profile, access review)",
+        "tags": [
+          "onboarding"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "anyOf": [
+                  {
+                    "type": "object",
+                    "required": [
+                      "step",
+                      "publicKey"
+                    ],
+                    "properties": {
+                      "step": {
+                        "type": "string",
+                        "enum": [
+                          "device_key"
+                        ]
+                      },
+                      "publicKey": {
+                        "maxLength": 4096,
+                        "type": "string"
+                      }
+                    }
+                  },
+                  {
+                    "type": "object",
+                    "required": [
+                      "step",
+                      "githubUsername"
+                    ],
+                    "properties": {
+                      "step": {
+                        "type": "string",
+                        "enum": [
+                          "github_link"
+                        ]
+                      },
+                      "githubUsername": {
+                        "pattern": "^[A-Za-z0-9-]{1,39}$",
+                        "type": "string"
+                      }
+                    }
+                  },
+                  {
+                    "type": "object",
+                    "required": [
+                      "step"
+                    ],
+                    "properties": {
+                      "step": {
+                        "type": "string",
+                        "enum": [
+                          "vpn_profile"
+                        ]
+                      }
+                    }
+                  },
+                  {
+                    "type": "object",
+                    "required": [
+                      "step"
+                    ],
+                    "properties": {
+                      "step": {
+                        "type": "string",
+                        "enum": [
+                          "access_review"
+                        ]
+                      }
+                    }
+                  }
+                ]
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "in": "path",
+            "name": "personId",
+            "required": true
+          }
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "202": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "accepted",
+                    "eventId"
+                  ],
+                  "properties": {
+                    "accepted": {
+                      "type": "boolean",
+                      "enum": [
+                        true
+                      ]
+                    },
+                    "eventId": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/people": {
+      "get": {
+        "summary": "People known to the platform (joiners and leavers)",
+        "tags": [
+          "onboarding"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "required": [
+                      "id",
+                      "name",
+                      "email",
+                      "team",
+                      "role",
+                      "status"
+                    ],
+                    "properties": {
+                      "id": {
+                        "type": "string"
+                      },
+                      "name": {
+                        "type": "string"
+                      },
+                      "email": {
+                        "type": "string"
+                      },
+                      "team": {
+                        "type": "string"
+                      },
+                      "role": {
+                        "type": "string",
+                        "enum": [
+                          "developer",
+                          "lead",
+                          "platform-engineer",
+                          "security"
+                        ]
+                      },
+                      "status": {
+                        "type": "string",
+                        "enum": [
+                          "active",
+                          "left"
+                        ]
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/analytics/compliance-daily": {
+      "get": {
+        "summary": "Aggregated, anonymised daily feed for the BI platform (Power BI). Requires the analytics.read scope.",
+        "tags": [
+          "analytics"
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "enum": [
+                    "json"
+                  ]
+                },
+                {
+                  "type": "string",
+                  "enum": [
+                    "csv"
+                  ]
+                }
+              ]
+            },
+            "in": "query",
+            "name": "format",
+            "required": false
+          }
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "generatedAt",
+                    "findings",
+                    "compliance"
+                  ],
+                  "properties": {
+                    "generatedAt": {
+                      "type": "string"
+                    },
+                    "findings": {
+                      "description": "Today's open findings, aggregated",
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "required": [
+                          "day",
+                          "team",
+                          "environment",
+                          "rule",
+                          "severity",
+                          "openFindings"
+                        ],
+                        "properties": {
+                          "day": {
+                            "type": "string"
+                          },
+                          "team": {
+                            "type": "string"
+                          },
+                          "environment": {
+                            "type": "string",
+                            "enum": [
+                              "sandbox",
+                              "dev",
+                              "test",
+                              "prod",
+                              "core"
+                            ]
+                          },
+                          "rule": {
+                            "type": "string"
+                          },
+                          "severity": {
+                            "type": "string",
+                            "enum": [
+                              "low",
+                              "medium",
+                              "high",
+                              "critical"
+                            ]
+                          },
+                          "openFindings": {
+                            "type": "integer"
+                          }
+                        }
+                      }
+                    },
+                    "compliance": {
+                      "description": "Daily compliance per team x environment (last 30 days)",
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "required": [
+                          "day",
+                          "team",
+                          "environment",
+                          "total",
+                          "compliant"
+                        ],
+                        "properties": {
+                          "day": {
+                            "type": "string"
+                          },
+                          "team": {
+                            "type": "string"
+                          },
+                          "environment": {
+                            "type": "string",
+                            "enum": [
+                              "sandbox",
+                              "dev",
+                              "test",
+                              "prod",
+                              "core"
+                            ]
+                          },
+                          "total": {
+                            "type": "integer"
+                          },
+                          "compliant": {
+                            "type": "integer"
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/templates": {
+      "get": {
+        "summary": "Template catalog: what a team gets per language and golden path (from templates/*/platform.yaml)",
+        "tags": [
+          "templates"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "templates"
+                  ],
+                  "properties": {
+                    "templates": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "required": [
+                          "id",
+                          "language",
+                          "framework",
+                          "goldenPath",
+                          "moduleVersion",
+                          "buildWorkflow",
+                          "artifact",
+                          "chooseWhen",
+                          "latestModuleVersion"
+                        ],
+                        "properties": {
+                          "id": {
+                            "description": "Template name (directory / template repository)",
+                            "type": "string"
+                          },
+                          "language": {
+                            "description": "Language and runtime version, e.g. node22, php8.3",
+                            "type": "string"
+                          },
+                          "framework": {
+                            "type": "string"
+                          },
+                          "goldenPath": {
+                            "description": "Golden-path module the template deploys onto",
+                            "type": "string"
+                          },
+                          "moduleVersion": {
+                            "description": "Module constraint the template pins, e.g. 2.4 (~> 2.4)",
+                            "type": "string"
+                          },
+                          "buildWorkflow": {
+                            "description": "Platform build workflow the template calls",
+                            "type": "string"
+                          },
+                          "artifact": {
+                            "anyOf": [
+                              {
+                                "type": "string",
+                                "enum": [
+                                  "image"
+                                ]
+                              },
+                              {
+                                "type": "string",
+                                "enum": [
+                                  "lambda-zip"
+                                ]
+                              },
+                              {
+                                "type": "string",
+                                "enum": [
+                                  "static-bundle"
+                                ]
+                              }
+                            ]
+                          },
+                          "runtime": {
+                            "description": "Lambda runtime, for lambda-api templates",
+                            "type": "string"
+                          },
+                          "chooseWhen": {
+                            "type": "string"
+                          },
+                          "latestModuleVersion": {
+                            "description": "Latest release of the golden-path module",
+                            "type": "string"
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/auth/personas": {
+      "get": {
+        "summary": "People who can sign in with the simulated Entra login",
+        "tags": [
+          "auth (simulated)"
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "required": [
+                      "id",
+                      "name",
+                      "team",
+                      "role"
+                    ],
+                    "properties": {
+                      "id": {
+                        "type": "string"
+                      },
+                      "name": {
+                        "type": "string"
+                      },
+                      "team": {
+                        "type": "string"
+                      },
+                      "role": {
+                        "type": "string"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/auth/dev-login": {
+      "post": {
+        "summary": "Simulated Entra sign-in: a person (user token) or the BI service principal (clientId \"bi-feed\")",
+        "tags": [
+          "auth (simulated)"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "personId": {
+                    "type": "string"
+                  },
+                  "clientId": {
+                    "type": "string",
+                    "enum": [
+                      "bi-feed"
+                    ]
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "token",
+                    "claims",
+                    "notice"
+                  ],
+                  "properties": {
+                    "token": {
+                      "type": "string"
+                    },
+                    "claims": {
+                      "type": "object",
+                      "required": [
+                        "oid",
+                        "name",
+                        "groups",
+                        "roles"
+                      ],
+                      "properties": {
+                        "oid": {
+                          "type": "string"
+                        },
+                        "name": {
+                          "type": "string"
+                        },
+                        "groups": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          }
+                        },
+                        "roles": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          }
+                        }
+                      }
+                    },
+                    "notice": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

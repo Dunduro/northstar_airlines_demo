@@ -1,0 +1,108 @@
+# Every PR and every push to main: app checks and Terraform checks. No cloud credentials:
+# Terraform tests run against mocked providers.
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  app:
+    name: app (typecheck, test, OpenAPI)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+      - name: OpenAPI spec is up to date (breaking changes show up in review)
+        run: |
+          npm run openapi
+          git diff --exit-code -- apps/api/openapi.json
+
+  terraform-fmt:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.11.4
+      - run: terraform fmt -recursive -check -diff terraform
+      - name: Template infra is formatted (init needs the private registry, so fmt is the local check)
+        run: terraform fmt -recursive -check -diff templates
+
+  terraform:
+    name: terraform (${{ matrix.dir }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        dir:
+          - terraform/org
+          - terraform/baseline
+          - terraform/backup
+          - terraform/modules/account-baseline
+          - terraform/modules/golden-paths/ecs-service
+          - terraform/modules/golden-paths/lambda-api
+          - terraform/modules/golden-paths/static-site
+    defaults:
+      run:
+        working-directory: ${{ matrix.dir }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.11.4
+      - run: terraform init -backend=false -input=false
+      - run: terraform validate
+      - name: terraform test (mock providers, no AWS)
+        run: |
+          if [ -d tests ]; then terraform test; else echo "no tests in ${{ matrix.dir }}"; fi
+
+  scp-json:
+    name: SCP documents are valid JSON and within size limit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: |
+          for f in terraform/policies/scp/*.json; do
+            size=$(jq -c . "$f" | wc -c)
+            echo "$f: ${size} bytes"
+            [ "$size" -le 5120 ] || { echo "::error file=$f::SCP exceeds 5120 characters"; exit 1; }
+          done
+
+  templates:
+    name: template ${{ matrix.template }} (image builds, runs read-only, answers /health)
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        template: [node-api, php-symfony, dotnet-api, python-fastapi]
+    steps:
+      - uses: actions/checkout@v4
+      - name: docker build
+        run: docker build -t "tpl-${{ matrix.template }}" "templates/${{ matrix.template }}"
+      - name: run as in ECS (read-only root, writable /tmp) and probe /health
+        env:
+          TEMPLATE: ${{ matrix.template }}
+        run: |
+          docker run -d --name app --read-only --tmpfs /tmp -p 8080:8080 "tpl-${TEMPLATE}"
+          for _ in $(seq 1 30); do
+            if curl -fsS -H 'x-correlation-id: ci-check' localhost:8080/health; then
+              docker logs app 2>&1 | tail -3; exit 0
+            fi
+            sleep 1
+          done
+          docker logs app; exit 1

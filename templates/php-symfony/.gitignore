@@ -1,0 +1,6 @@
+/vendor/
+/var/
+.terraform/
+*.tfstate*
+tfplan
+plan.json

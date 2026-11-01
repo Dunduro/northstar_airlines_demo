@@ -1,0 +1,19 @@
+{
+  "name": "hello-node-api",
+  "version": "0.1.0",
+  "private": true,
+  "description": "NorthStar paved-road starter: Node 22 + Fastify on the ecs-service golden path",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "node --watch src/server.js",
+    "lint": "node --check src/server.js && node --check src/app.js && node --check src/correlation.js",
+    "test": "node --test"
+  },
+  "dependencies": {
+    "fastify": "^5.12.0"
+  }
+}

@@ -1,0 +1,38 @@
+{
+  "name": "northstar-platform",
+  "private": true,
+  "description": "NorthStar landing zone & governance platform \u2014 proof of concept",
+  "workspaces": [
+    "packages/shared",
+    "packages/db",
+    "apps/api",
+    "apps/worker",
+    "apps/web",
+    "apps/mock-receivers",
+    "apps/mcp",
+    "simulator"
+  ],
+  "scripts": {
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "test": "vitest run",
+    "openapi": "npm run openapi -w apps/api",
+    "up": "docker compose up --build",
+    "down": "docker compose down -v",
+    "demo:seed": "npm run sim -- seed",
+    "demo:reset": "npm run sim -- reset",
+    "sim": "npm run --silent -w simulator sim --",
+    "mcp": "npm run --silent -w apps/mcp start"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2",
+    "vitest": "^3.2.7"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "overrides": {
+    "tinypool": "^2.2.0"
+  }
+}

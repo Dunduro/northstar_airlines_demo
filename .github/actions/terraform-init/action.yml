@@ -1,0 +1,38 @@
+name: Terraform init (one state per account)
+description: >
+  Installs Terraform and initialises a root module against the S3 state backend, with its
+  own state key. The roots declare no backend (local state in the PoC); the pipeline adds
+  the S3 backend through an override file.
+
+inputs:
+  working-directory:
+    description: Root module to initialise, e.g. terraform/baseline
+    required: true
+  state-key:
+    description: >
+      State object key, e.g. accounts/payments-prod.tfstate. Leave empty when one job handles
+      a batch of accounts: it then runs .github/scripts/init-account.sh per account.
+    required: false
+    default: ""
+
+runs:
+  using: composite
+  steps:
+    - uses: hashicorp/setup-terraform@v3
+      with:
+        terraform_version: 1.11.4 # >= 1.10 for native S3 locking (use_lockfile)
+        terraform_wrapper: false # keep real exit codes for -detailed-exitcode
+
+    - name: Use the S3 backend
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      run: printf 'terraform {\n  backend "s3" {}\n}\n' > backend_override.tf
+
+    - name: terraform init
+      if: inputs.state-key != ''
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      run: >
+        terraform init -input=false
+        -backend-config=../backend/s3.tfbackend
+        -backend-config="key=${{ inputs.state-key }}"

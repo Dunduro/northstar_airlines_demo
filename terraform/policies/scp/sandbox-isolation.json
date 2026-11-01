@@ -1,0 +1,31 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "DenyConnectivityToTheCorporateNetwork",
+      "Effect": "Deny",
+      "Action": [
+        "ec2:CreateTransitGatewayVpcAttachment",
+        "ec2:AcceptTransitGatewayVpcAttachment",
+        "ec2:CreateVpcPeeringConnection",
+        "ec2:AcceptVpcPeeringConnection",
+        "ec2:CreateVpnConnection",
+        "ec2:CreateCustomerGateway",
+        "directconnect:*",
+        "ram:AcceptResourceShareInvitation"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "DenyLongTermCommitments",
+      "Effect": "Deny",
+      "Action": [
+        "ec2:PurchaseReservedInstancesOffering",
+        "ec2:PurchaseHostReservation",
+        "rds:PurchaseReservedDBInstancesOffering",
+        "savingsplans:CreateSavingsPlan"
+      ],
+      "Resource": "*"
+    }
+  ]
+}

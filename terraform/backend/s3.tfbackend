@@ -1,0 +1,9 @@
+# Production backend settings, shared by every state. The key is passed per state:
+#   -backend-config="key=accounts/payments-prod.tfstate"   (one state per account)
+#   -backend-config="key=org/terraform.tfstate"
+# Requires Terraform >= 1.10 for native S3 locking (use_lockfile); no DynamoDB table.
+bucket       = "northstar-tfstate-100000000004"
+region       = "me-central-1"
+encrypt      = true
+kms_key_id   = "alias/northstar/tfstate"
+use_lockfile = true

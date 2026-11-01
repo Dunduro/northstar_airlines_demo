@@ -1,0 +1,14 @@
+# platform.yaml - the service manifest (architecture 4.2). The platform reads it to register
+# the service, route its alerts and show it in the dashboard. The scaffolder fills in
+# service, team, owner and cost-centre when a repo is created from this template.
+service: hello-react-site
+team: crew
+owner: crew-lead@northstar.example
+cost-centre: CC-1003
+template: react-static@1.0
+language: javascript
+framework: react-vite
+flavour: static-site@2.0
+environments: [dev, test, prod]
+data-classification: public
+health-check: /health.json

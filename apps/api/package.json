@@ -1,0 +1,23 @@
+{
+  "name": "@northstar/api",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "tsx src/index.ts",
+    "dev": "tsx watch src/index.ts",
+    "openapi": "tsx scripts/openapi.ts",
+    "typecheck": "tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "@fastify/jwt": "^10.2.6",
+    "@fastify/swagger": "^9.4.0",
+    "@fastify/swagger-ui": "^6.1.2",
+    "@fastify/type-provider-typebox": "^5.1.0",
+    "@northstar/db": "0.1.0",
+    "@northstar/shared": "0.1.0",
+    "@sinclair/typebox": "^0.34.13",
+    "fastify": "^5.2.0",
+    "pg-boss": "^10.1.6"
+  }
+}

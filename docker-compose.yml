@@ -1,0 +1,71 @@
+# One command: docker compose up --build   (then: npm run demo:seed)
+# Secrets below are LOCAL DEMO defaults, overridable via .env (see .env.example).
+x-node: &node
+  build: .
+  restart: unless-stopped
+  environment: &env
+    DATABASE_URL: postgres://northstar:northstar@postgres:5432/northstar
+    WEBHOOK_SECRET: ${WEBHOOK_SECRET:-local-dev-only-webhook-secret}
+    JWT_SECRET: ${JWT_SECRET:-local-dev-only-jwt-secret}
+  depends_on:
+    postgres:
+      condition: service_healthy
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: northstar
+      POSTGRES_PASSWORD: northstar
+      POSTGRES_DB: northstar
+    ports: ["54329:5432"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U northstar"]
+      interval: 2s
+      timeout: 3s
+      retries: 20
+
+  api:
+    <<: *node
+    command: npm run start -w apps/api
+    ports: ["${API_PORT:-3000}:3000"]  # override with API_PORT if 3000 is taken
+    environment:
+      <<: *env
+      AUTH_MODE: simulated-entra   # stand-in for Entra ID OIDC
+      DEMO_MODE: "true"            # enables /v1/demo/* for the simulator
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:3000/health || exit 1"]
+      interval: 3s
+      timeout: 3s
+      retries: 30
+
+  worker:
+    <<: *node
+    command: npm run start -w apps/worker
+    environment:
+      <<: *env
+      TEAMS_WEBHOOK_BASE: http://mock-receivers:4000/teams/webhook
+      SERVICENOW_URL: http://mock-receivers:4000/servicenow
+      GITHUB_API_URL: http://mock-receivers:4000/github
+      DASHBOARD_URL: http://localhost:5173
+    depends_on:
+      api:
+        condition: service_healthy
+
+  mock-receivers:
+    <<: *node
+    command: npm run start -w apps/mock-receivers
+    ports: ["${MOCK_PORT:-4000}:4000"]
+    environment:
+      API_URL: http://api:3000
+      WEBHOOK_SECRET: ${WEBHOOK_SECRET:-local-dev-only-webhook-secret}
+    depends_on: []
+
+  web:
+    <<: *node
+    command: npm run dev -w apps/web
+    ports: ["${WEB_PORT:-5173}:5173"]
+    environment:
+      API_PROXY_TARGET: http://api:3000
+      MOCK_PROXY_TARGET: http://mock-receivers:4000
+    depends_on: []

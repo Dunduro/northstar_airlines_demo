@@ -1,0 +1,32 @@
+# Promote an artifact that already ran in dev to test or prod. Normally dispatched by the
+# product's deployment repo when a release-manifest PR merges (architecture 4.4); it can be
+# run by hand too - prod still waits for the `prod` environment's reviewers, and the account
+# only trusts the platform's reusable deploy workflow at a release tag (ADR-011).
+name: deploy
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: Target environment (prod waits for the environment's reviewers)
+        type: choice
+        options: [test, prod]
+        required: true
+      artifact:
+        description: Versioned bundle prefix, exactly as built (e.g. s3://northstar-artifacts/<repo>/releases/0.1.42/)
+        type: string
+        required: true
+
+run-name: deploy ${{ inputs.artifact }} to ${{ inputs.environment }}
+
+jobs:
+  deploy:
+    uses: northstar/platform-workflows/.github/workflows/reusable-deploy.yml@v3
+    with:
+      environment: ${{ inputs.environment }}
+      account-id: ${{ inputs.environment == 'prod' && vars.AWS_ACCOUNT_ID_PROD || vars.AWS_ACCOUNT_ID_TEST }}
+      artifact: ${{ inputs.artifact }}
+    permissions:
+      contents: read
+      id-token: write
+    secrets: inherit

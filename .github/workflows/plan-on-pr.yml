@@ -1,0 +1,205 @@
+# A pull request to the landing zone = a change. Plan every affected account (one state per
+# account), run policy checks on each plan, and post the results to the platform API so the
+# dashboard shows what the change would do before anyone merges it. The org root and the
+# Backup account's root (terraform/backup, applied by apply-backup.yml) are planned too.
+name: plan-on-pr
+
+on:
+  pull_request:
+    paths:
+      - terraform/**
+
+permissions:
+  contents: read
+  id-token: write # GitHub OIDC -> AWS; there are no AWS keys anywhere
+  pull-requests: write
+
+concurrency:
+  group: plan-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  affected:
+    runs-on: ubuntu-latest
+    outputs:
+      accounts: ${{ steps.accounts.outputs.accounts }}
+      batches: ${{ steps.accounts.outputs.batches }}
+      org: ${{ steps.org.outputs.changed }}
+      backup: ${{ steps.backup.outputs.changed }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - id: accounts
+        run: |
+          accounts=$(.github/scripts/affected-accounts.sh origin/${{ github.base_ref }})
+          batches=$(.github/scripts/batch-accounts.sh <<<"$accounts")
+          { echo "accounts=$accounts"; echo "batches=$batches"; } >> "$GITHUB_OUTPUT"
+          echo "$(jq length <<<"$accounts") affected accounts in $(jq length <<<"$batches") jobs"
+      - id: org
+        run: |
+          if git diff --name-only origin/${{ github.base_ref }}...HEAD | grep -qE '^terraform/(org|policies|registry)/'; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          fi
+      - id: backup
+        run: |
+          if git diff --name-only origin/${{ github.base_ref }}...HEAD | grep -qE '^terraform/(backup|registry)/'; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  plan-account:
+    # One job per batch of accounts (batch-accounts.sh); the matrix cap is 256 jobs.
+    name: plan ${{ matrix.batch.name }} (${{ matrix.batch.size }})
+    needs: affected
+    if: needs.affected.outputs.accounts != '[]'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      max-parallel: 20 # jobs, and so accounts, at once: AWS API limits and runner capacity
+      matrix:
+        batch: ${{ fromJSON(needs.affected.outputs.batches) }}
+    env:
+      ACCOUNTS: ${{ toJSON(matrix.batch.accounts) }}
+      RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.PLATFORM_PIPELINE_ROLE_ARN }}
+          aws-region: me-central-1
+
+      - uses: ./.github/actions/terraform-init
+        with:
+          working-directory: terraform/baseline
+
+      # The Checkov CLI rather than the action: an action cannot run once per account in a loop.
+      - name: Install Checkov
+        run: pipx install 'checkov>=3.2,<4'
+
+      - name: Plan, policy-check and report each account
+        shell: bash # explicit: adds -o pipefail, so `| tee` keeps the real exit code
+        working-directory: terraform/baseline
+        env:
+          PLATFORM_API_URL: ${{ vars.PLATFORM_API_URL }}
+          PLATFORM_WEBHOOK_SECRET: ${{ secrets.PLATFORM_WEBHOOK_SECRET }}
+        run: |
+          failed=()
+          while read -r account; do
+            ACCOUNT_ID=$(jq -r .id <<<"$account")
+            ACCOUNT_NAME=$(jq -r .name <<<"$account")
+            echo "::group::${ACCOUNT_NAME}"
+            rm -rf reports
+
+            # terraform plan (read-only role in the target account)
+            if ! { ../../.github/scripts/init-account.sh "$ACCOUNT_NAME" &&
+                   terraform plan -input=false -lock=false -out=tfplan \
+                     -var account_name="$ACCOUNT_NAME" \
+                     -var pipeline_role_name=northstar-platform-plan &&
+                   terraform show -json tfplan > plan.json; }; then
+              echo "::error::plan failed for ${ACCOUNT_NAME}"
+              failed+=("$ACCOUNT_NAME (plan failed)")
+              echo "::endgroup::"
+              continue
+            fi
+
+            # Checkov on the plan: report first, the gate below decides.
+            checkov -f plan.json --framework terraform_plan -o json --output-file-path reports --soft-fail --quiet >/dev/null || true
+            [ -s reports/results_json.json ] || echo '{}' > reports/results_json.json
+
+            # plan.result event
+            jq -n \
+              --arg accountId "$ACCOUNT_ID" --arg runUrl "$RUN_URL" \
+              --slurpfile plan plan.json \
+              --slurpfile checkov reports/results_json.json '
+              def count(a): [$plan[0].resource_changes[]? | select(.change.actions | index(a))] | length;
+              {
+                type: "plan.result",
+                accountId: $accountId,
+                runUrl: $runUrl,
+                summary: { add: count("create"), change: count("update"), destroy: count("delete") },
+                policyFindings: [
+                  $checkov[0] | (if type == "array" then .[] else . end) | .results.failed_checks[]? |
+                  { rule: .check_id,
+                    severity: ((.severity // "medium") | ascii_downcase
+                               | if IN("low", "medium", "high", "critical") then . else "medium" end),
+                    resource: .resource,
+                    link: (.guideline // "") }
+                ]
+              }' > event.json
+            jq '{summary, findings: (.policyFindings | length)}' event.json
+            echo "### ${ACCOUNT_NAME}: $(jq -c .summary event.json), $(jq '.policyFindings | length' event.json) policy findings" >> "$GITHUB_STEP_SUMMARY"
+
+            # The dashboard being down must never block a change.
+            ../../.github/scripts/post-event.sh event.json || echo "::warning::${ACCOUNT_NAME}: result not posted"
+
+            # Policy gate: high and critical findings block the merge.
+            blocking=$(jq '[.policyFindings[] | select(.severity == "high" or .severity == "critical")] | length' event.json)
+            if [ "$blocking" -gt 0 ]; then
+              echo "::error::${blocking} high/critical policy findings in ${ACCOUNT_NAME}"
+              failed+=("$ACCOUNT_NAME (${blocking} high/critical findings)")
+            fi
+            echo "::endgroup::"
+          done < <(jq -c '.[]' <<<"$ACCOUNTS")
+
+          # Every account in the batch was planned and reported; now fail for the ones that must block.
+          if [ "${#failed[@]}" -gt 0 ]; then
+            printf '::error::Blocked: %s\n' "${failed[@]}"
+            exit 1
+          fi
+
+  plan-org:
+    name: plan org (OUs, SCPs, Identity Center)
+    needs: affected
+    if: needs.affected.outputs.org == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.ORG_PLAN_ROLE_ARN }} # read-only role in the management account
+          aws-region: me-central-1
+      - uses: ./.github/actions/terraform-init
+        with:
+          working-directory: terraform/org
+          state-key: org/terraform.tfstate
+      - name: terraform plan
+        shell: bash # explicit: adds -o pipefail, so `| tee` keeps the real exit code
+        working-directory: terraform/org
+        run: |
+          terraform plan -input=false -lock=false -no-color -out=tfplan | tee plan.txt
+          { echo '### org plan'; echo '```'; tail -n 40 plan.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+
+  plan-backup:
+    name: plan backup (central vault, restore testing, restore VPC)
+    needs: affected
+    if: needs.affected.outputs.backup == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.PLATFORM_PIPELINE_ROLE_ARN }}
+          aws-region: me-central-1
+      - uses: ./.github/actions/terraform-init
+        with:
+          working-directory: terraform/backup
+          state-key: backup/terraform.tfstate
+      - name: terraform plan (read-only role in the Backup account)
+        shell: bash # explicit: adds -o pipefail, so `| tee` keeps the real exit code
+        working-directory: terraform/backup
+        run: |
+          terraform plan -input=false -lock=false -no-color -out=tfplan \
+            -var pipeline_role_name=northstar-platform-plan | tee plan.txt
+          terraform show -json tfplan > plan.json
+      - name: Plan summary (counts and Vault Lock changes)
+        id: summary
+        run: .github/scripts/backup-plan-summary.sh terraform/backup/plan.json "backup plan" >> "$GITHUB_OUTPUT"
+      - name: Flag Vault Lock changes for review
+        if: steps.summary.outputs.lock_changes != '0'
+        run: |
+          echo "::warning::This PR changes the Vault Lock (${{ steps.summary.outputs.lock_addresses }}). After the grace period this is irreversible; apply-backup will refuse it unless run manually with confirm_vault_lock_change: true."

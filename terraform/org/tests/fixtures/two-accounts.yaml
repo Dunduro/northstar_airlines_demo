@@ -1,0 +1,17 @@
+accounts:
+  - id: "200000000101"
+    name: baggage-dev
+    environment: dev
+    team: baggage
+    owner: baggage-lead@northstar.example
+    ou: Workloads/Dev
+    flavours: [ecs-service]
+    baseline_version: "2.3.0"
+  - id: "200000000103"
+    name: baggage-prod
+    environment: prod
+    team: baggage
+    owner: baggage-lead@northstar.example
+    ou: Workloads/Prod
+    flavours: [ecs-service]
+    baseline_version: "2.3.0"

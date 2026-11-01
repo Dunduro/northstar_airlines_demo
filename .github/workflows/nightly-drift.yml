@@ -1,0 +1,114 @@
+# Nightly: does reality still match the code? `terraform plan -detailed-exitcode` per account
+# with the read-only role. Exit code 0 = clean, 2 = drift, 1 = error. One drift.result event
+# goes to the platform API, which classifies and routes it (Prod drift = alert + ticket to the
+# owner, Dev drift = daily digest). AWS Config catches what never touched a pipeline.
+name: nightly-drift
+
+on:
+  schedule:
+    - cron: "0 1 * * *" # 05:00 UAE, before the working day
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: nightly-drift
+  cancel-in-progress: false
+
+jobs:
+  accounts:
+    runs-on: ubuntu-latest
+    outputs:
+      batches: ${{ steps.list.outputs.batches }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: list
+        run: |
+          accounts=$(yq -o=json -I=0 '[.accounts[] | select(.ou != "Suspended") | {"id": .id, "name": .name}]' terraform/registry/accounts.yaml)
+          batches=$(.github/scripts/batch-accounts.sh <<<"$accounts")
+          echo "batches=${batches}" >> "$GITHUB_OUTPUT"
+          echo "$(jq length <<<"$accounts") accounts in $(jq length <<<"$batches") jobs"
+
+  plan:
+    # One job per batch of accounts (batch-accounts.sh); the matrix cap is 256 jobs.
+    name: drift ${{ matrix.batch.name }} (${{ matrix.batch.size }})
+    needs: accounts
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      max-parallel: 20 # jobs, and so accounts, at once: AWS API limits and runner capacity
+      matrix:
+        batch: ${{ fromJSON(needs.accounts.outputs.batches) }}
+    env:
+      ACCOUNTS: ${{ toJSON(matrix.batch.accounts) }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.PLATFORM_PIPELINE_ROLE_ARN }}
+          aws-region: me-central-1
+
+      - uses: ./.github/actions/terraform-init
+        with:
+          working-directory: terraform/baseline
+
+      - name: terraform plan -detailed-exitcode per account
+        shell: bash # explicit: adds -o pipefail, so `| tee` keeps the real exit code
+        working-directory: terraform/baseline
+        run: |
+          mkdir -p ../../drift
+          errors=0
+          while read -r account; do
+            ACCOUNT_ID=$(jq -r .id <<<"$account")
+            ACCOUNT_NAME=$(jq -r .name <<<"$account")
+            echo "::group::${ACCOUNT_NAME}"
+            set +e
+            ../../.github/scripts/init-account.sh "$ACCOUNT_NAME" &&
+              terraform plan -input=false -lock=false -detailed-exitcode -out=tfplan \
+                -var account_name="$ACCOUNT_NAME" -var pipeline_role_name=northstar-platform-plan
+            code=$?
+            set -e
+            case "$code" in
+              0) jq -n --arg id "$ACCOUNT_ID" '{accountId: $id, drifted: false, resources: []}' > "../../drift/${ACCOUNT_NAME}.json" ;;
+              2) terraform show -json tfplan |
+                   jq --arg id "$ACCOUNT_ID" '{accountId: $id, drifted: true,
+                     resources: [.resource_changes[] | select(.change.actions != ["no-op"]) | .address]}' \
+                   > "../../drift/${ACCOUNT_NAME}.json"
+                 echo "::warning::Drift in ${ACCOUNT_NAME}" ;;
+              *) echo "::error::plan failed for ${ACCOUNT_NAME}"; errors=$((errors + 1)) ;;
+            esac
+            echo "::endgroup::"
+          done < <(jq -c '.[]' <<<"$ACCOUNTS")
+          # The other accounts in the batch still got their plan; the job goes red for the errors.
+          [ "$errors" -eq 0 ]
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: drift-${{ matrix.batch.name }}
+          path: drift/
+
+  report:
+    needs: plan
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: drift-*
+          merge-multiple: true
+          path: drift
+      - name: Build drift.result event
+        run: |
+          jq -s --arg runUrl "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
+            '{type: "drift.result", runUrl: $runUrl, accounts: .}' drift/*.json > event.json
+          echo "Drifted: $(jq '[.accounts[] | select(.drifted)] | length' event.json) of $(jq '.accounts | length' event.json)"
+      - name: Report to the platform API
+        env:
+          PLATFORM_API_URL: ${{ vars.PLATFORM_API_URL }}
+          PLATFORM_WEBHOOK_SECRET: ${{ secrets.PLATFORM_WEBHOOK_SECRET }}
+        run: .github/scripts/post-event.sh event.json

@@ -1,0 +1,171 @@
+# The platform's reusable deploy workflow — the ONLY workflow the deploy role in any account
+# trusts. (In production this file lives in northstar/platform-workflows and is released as
+# tags: teams call it with `uses: northstar/platform-workflows/.github/workflows/reusable-deploy.yml@v3`.)
+#
+# Why that matters: the job that runs this file gets an OIDC token whose subject contains
+#   job_workflow_ref:northstar/platform-workflows/.github/workflows/reusable-deploy.yml@refs/tags/v3.x.y
+# and the account's deploy role (terraform/modules/account-baseline/deploy-role.tf) accepts
+# nothing else. Teams own their pipeline; the step that touches an account is always this one,
+# with its policy checks, approvals (GitHub environment) and audit trail.
+#
+# Caller (a team repo):
+#   jobs:
+#     deploy:
+#       uses: northstar/platform-workflows/.github/workflows/reusable-deploy.yml@v3
+#       with: { environment: prod, account-id: "100000000103", artifact: "<image@sha256:...>" }
+#       permissions: { id-token: write, contents: read }
+#       secrets: inherit
+#
+# Artifacts come from the platform build workflows (build-node/php/dotnet/python/static.yml),
+# never from this workflow: an image digest (ecs-service), a versioned zip (lambda-api) or a
+# versioned bundle prefix (static-site). The team's root module declares `artifact` and
+# `environment` variables; optional per-environment settings go in infra/env/<env>.tfvars.
+# Artifacts live in the shared-services account; its ECR repository policy and artifact bucket
+# policy grant read to every account's northstar-deploy role (aws:PrincipalOrgID).
+name: reusable-deploy
+
+on:
+  workflow_call:
+    inputs:
+      environment:
+        description: GitHub environment and target environment (dev | test | prod). Prod has required reviewers.
+        type: string
+        required: true
+      account-id:
+        description: Target AWS account (from the registry)
+        type: string
+        required: true
+      artifact:
+        description: Immutable artifact to deploy (image digest, versioned zip or versioned bundle prefix) - build once, deploy many
+        type: string
+        required: true
+      working-directory:
+        description: The team's Terraform (golden path module + extras)
+        type: string
+        default: infra
+      aws-region:
+        type: string
+        default: me-central-1
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  deploy:
+    name: deploy to ${{ inputs.environment }}
+    runs-on: ubuntu-latest
+    # Puts "environment:<env>" in the token subject, and applies the environment's protection
+    # rules (required reviewers for prod) before any credential is issued.
+    environment: ${{ inputs.environment }}
+    concurrency:
+      group: deploy-${{ github.repository }}-${{ inputs.environment }}
+      cancel-in-progress: false
+    defaults:
+      run:
+        working-directory: ${{ inputs.working-directory }}
+    env:
+      RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Only artifacts pinned by digest or version
+        env:
+          ARTIFACT: ${{ inputs.artifact }}
+        run: |
+          if ! [[ "$ARTIFACT" =~ @sha256:[0-9a-f]{64}$ \
+               || "$ARTIFACT" =~ ^s3://.+/[0-9]+\.[0-9]+\.[0-9]+\.zip$ \
+               || "$ARTIFACT" =~ ^s3://.+/releases/[0-9]+\.[0-9]+\.[0-9]+/$ ]]; then
+            echo "::error::artifact must be an image digest, a versioned zip or a versioned bundle prefix"; exit 1
+          fi
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::${{ inputs.account-id }}:role/northstar-deploy
+          role-session-name: deploy-${{ github.run_id }}
+          aws-region: ${{ inputs.aws-region }}
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.11.4
+          terraform_wrapper: false
+
+      - name: terraform init (state in the target account)
+        run: >
+          terraform init -input=false
+          -backend-config="bucket=northstar-tfstate-${{ inputs.account-id }}"
+          -backend-config="key=${{ github.repository }}/${{ inputs.environment }}.tfstate"
+          -backend-config="region=${{ inputs.aws-region }}"
+          -backend-config="use_lockfile=true"
+          -backend-config="encrypt=true"
+
+      # static-site: copy the immutable bundle into the site bucket BEFORE CloudFront switches
+      # to it, so there is no window in which the new origin path is empty. On the very first
+      # deploy the bucket does not exist yet; then the copy runs right after apply instead.
+      - name: Stage static bundle (static-site only)
+        id: stage
+        if: endsWith(inputs.artifact, '/')
+        env:
+          ARTIFACT: ${{ inputs.artifact }}
+        run: |
+          bucket=$(terraform output -raw static_site_bucket 2>/dev/null || true)
+          release="releases/$(basename "$ARTIFACT")/"
+          if [ -n "$bucket" ]; then
+            aws s3 sync "$ARTIFACT" "s3://${bucket}/${release}" --only-show-errors
+            echo "staged=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "staged=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: terraform plan
+        env:
+          ENVIRONMENT: ${{ inputs.environment }}
+          ARTIFACT: ${{ inputs.artifact }}
+        run: |
+          var_file=()
+          [ -f "env/${ENVIRONMENT}.tfvars" ] && var_file=(-var-file="env/${ENVIRONMENT}.tfvars")
+          terraform plan -input=false -out=tfplan "${var_file[@]}" \
+            -var environment="$ENVIRONMENT" -var artifact="$ARTIFACT"
+          terraform show -json tfplan > plan.json
+
+      - name: Policy checks (not optional - this is the paved road)
+        uses: bridgecrewio/checkov-action@v12
+        with:
+          file: ${{ inputs.working-directory }}/plan.json
+          framework: terraform_plan
+          soft_fail: false
+
+      - name: terraform apply
+        id: apply
+        run: terraform apply -input=false tfplan
+
+      - name: Publish static bundle (static-site only)
+        if: endsWith(inputs.artifact, '/')
+        env:
+          ARTIFACT: ${{ inputs.artifact }}
+          STAGED: ${{ steps.stage.outputs.staged }}
+        run: |
+          bucket=$(terraform output -raw static_site_bucket)
+          if [ "$STAGED" != "true" ]; then
+            aws s3 sync "$ARTIFACT" "s3://${bucket}/releases/$(basename "$ARTIFACT")/" --only-show-errors
+          fi
+          aws cloudfront create-invalidation --distribution-id "$(terraform output -raw static_site_distribution_id)" \
+            --paths "/index.html" "/" > /dev/null
+
+      - name: Report to the platform API
+        if: always() && steps.apply.outcome != 'skipped'
+        continue-on-error: true
+        working-directory: .
+        env:
+          PLATFORM_API_URL: ${{ vars.PLATFORM_API_URL }}
+          PLATFORM_WEBHOOK_SECRET: ${{ secrets.PLATFORM_WEBHOOK_SECRET }}
+          STATUS: ${{ steps.apply.outcome == 'success' && 'succeeded' || 'failed' }}
+        run: |
+          jq -n --arg accountId "${{ inputs.account-id }}" --arg runUrl "$RUN_URL" \
+                --arg ref "${{ inputs.artifact }}" --arg status "$STATUS" \
+            '{type: "apply.result", scope: "deploy", accountId: $accountId, runUrl: $runUrl, ref: $ref, status: $status}' > event.json
+          sig="sha256=$(openssl dgst -sha256 -hmac "$PLATFORM_WEBHOOK_SECRET" event.json | awk '{print $NF}')"
+          curl --silent --show-error --fail-with-body --retry 3 --max-time 10 \
+            -X POST "${PLATFORM_API_URL%/}/v1/events/pipeline" \
+            -H "content-type: application/json" -H "x-northstar-signature: ${sig}" \
+            --data-binary @event.json

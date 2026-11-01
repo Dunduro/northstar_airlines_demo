@@ -1,0 +1,158 @@
+# One wave of a rollout (called by rollout-waves.yml). Not triggered on its own.
+name: apply-wave
+
+on:
+  workflow_call:
+    inputs:
+      wave:
+        description: sandbox | dev | test | prod
+        type: string
+        required: true
+      failure_threshold:
+        description: Halt the wave when failed/total exceeds this fraction (0 = any failure halts)
+        type: string
+        required: true
+      rollout_id:
+        type: string
+        required: true
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  targets:
+    name: ${{ inputs.wave }} - approve and list targets
+    runs-on: ubuntu-latest
+    # Environment protection rules live in GitHub: lz-prod has required reviewers and a wait
+    # timer (soak period). The other waves have no reviewers and start straight away.
+    environment: lz-${{ inputs.wave }}
+    outputs:
+      accounts: ${{ steps.list.outputs.accounts }}
+      batches: ${{ steps.list.outputs.batches }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: list
+        run: |
+          accounts=$(.github/scripts/wave-accounts.sh "${{ inputs.wave }}")
+          batches=$(.github/scripts/batch-accounts.sh <<<"$accounts")
+          { echo "accounts=$accounts"; echo "batches=$batches"; } >> "$GITHUB_OUTPUT"
+          echo "${{ inputs.wave }}: $(jq length <<<"$accounts") accounts in $(jq length <<<"$batches") jobs"
+
+  apply:
+    # One job per batch of accounts (batch-accounts.sh): a matrix is capped at 256 jobs, a wave
+    # can hold more accounts than that. Up to 200 accounts it is one account per job.
+    name: apply ${{ matrix.batch.name }} (${{ matrix.batch.size }})
+    needs: targets
+    if: needs.targets.outputs.accounts != '[]'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false # 3 of 400 failing must not block the other 397
+      max-parallel: 20 # jobs, and so accounts, at once: AWS API limits and runner capacity
+      matrix:
+        batch: ${{ fromJSON(needs.targets.outputs.batches) }}
+    env:
+      ACCOUNTS: ${{ toJSON(matrix.batch.accounts) }}
+      RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+      ROLLOUT_ID: ${{ inputs.rollout_id }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.PLATFORM_PIPELINE_ROLE_ARN }}
+          aws-region: me-central-1
+
+      - uses: ./.github/actions/terraform-init
+        with:
+          working-directory: terraform/baseline
+
+      - name: terraform apply per account (baseline role in the target account)
+        shell: bash # explicit: adds -o pipefail, so `| tee` keeps the real exit code
+        working-directory: terraform/baseline
+        env:
+          PLATFORM_API_URL: ${{ vars.PLATFORM_API_URL }}
+          PLATFORM_WEBHOOK_SECRET: ${{ secrets.PLATFORM_WEBHOOK_SECRET }}
+        run: |
+          # A failed account is data for the wave gate, not a reason to stop: every account in
+          # the batch gets its apply, its result file and its event, whatever the others did.
+          mkdir -p ../../result
+          while read -r account; do
+            ACCOUNT_ID=$(jq -r .targetId <<<"$account")
+            ACCOUNT_NAME=$(jq -r .name <<<"$account")
+            echo "::group::${ACCOUNT_NAME}"
+            status=failed
+            # shell: bash runs with -eo pipefail, so a failed init or apply fails its pipeline despite tee.
+            if ../../.github/scripts/init-account.sh "$ACCOUNT_NAME" 2>&1 | tee apply.log &&
+               terraform apply -input=false -auto-approve \
+                 -var account_name="$ACCOUNT_NAME" \
+                 -var pipeline_role_name=northstar-platform-baseline 2>&1 | tee -a apply.log; then
+              status=succeeded
+            fi
+            error=""
+            if [ "$status" = "failed" ]; then error=$(grep -m1 -A2 'Error:' apply.log 2>/dev/null | tr '\n' ' ' || true); fi
+            version=$(yq ".accounts[] | select(.name == \"$ACCOUNT_NAME\") | .baseline_version" ../registry/accounts.yaml)
+            jq -n --arg accountId "$ACCOUNT_ID" --arg runUrl "$RUN_URL" --arg ref "$GITHUB_SHA" \
+                  --arg status "$status" --arg error "$error" --arg rolloutId "$ROLLOUT_ID" \
+                  --arg version "$version" '
+              {type: "apply.result", accountId: $accountId, runUrl: $runUrl, ref: $ref, status: $status,
+               rolloutId: $rolloutId, baselineVersion: $version}
+              + (if $error != "" then {error: $error} else {} end)' > "../../result/${ACCOUNT_NAME}.json"
+            [ "$status" = "succeeded" ] || echo "::error::${ACCOUNT_NAME}: apply failed"
+            # The dashboard being down must never block or fail a rollout.
+            ../../.github/scripts/post-event.sh "../../result/${ACCOUNT_NAME}.json" || echo "::warning::${ACCOUNT_NAME}: result not posted"
+            echo "::endgroup::"
+          done < <(jq -c '.[]' <<<"$ACCOUNTS")
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: result-${{ inputs.wave }}-${{ matrix.batch.name }}
+          path: result/
+
+  gate:
+    name: ${{ inputs.wave }} - failure threshold
+    needs: [targets, apply]
+    if: always() && needs.targets.result == 'success'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: result-${{ inputs.wave }}-*
+          merge-multiple: true
+          path: results
+      - name: Halt the wave if failures exceed the threshold
+        id: verdict
+        env:
+          EXPECTED: ${{ needs.targets.outputs.accounts }}
+          THRESHOLD: ${{ inputs.failure_threshold }}
+        run: |
+          total=$(jq length <<<"$EXPECTED")
+          reported=$(find results -name '*.json' 2>/dev/null | wc -l)
+          failed=$(cat results/*.json 2>/dev/null | jq -s '[.[] | select(.status == "failed")] | length')
+          failed=$(( failed + total - reported )) # a missing result counts as a failure
+          status=succeeded
+          if [ "$total" -gt 0 ] && jq -e -n --argjson f "$failed" --argjson t "$total" --argjson th "$THRESHOLD" '($f / $t) > $th' >/dev/null; then
+            status=halted
+          fi
+          echo "${{ inputs.wave }}: ${failed}/${total} failed (threshold ${THRESHOLD}) -> ${status}"
+          { echo "status=$status"; echo "failed=$failed"; echo "total=$total"; } >> "$GITHUB_OUTPUT"
+
+      - name: Report wave.completed to the platform API
+        if: needs.targets.outputs.accounts != '[]'
+        continue-on-error: true # the dashboard being down must never block or unblock a rollout
+        env:
+          PLATFORM_API_URL: ${{ vars.PLATFORM_API_URL }}
+          PLATFORM_WEBHOOK_SECRET: ${{ secrets.PLATFORM_WEBHOOK_SECRET }}
+        run: |
+          jq -n --arg id "${{ inputs.rollout_id }}" --arg wave "${{ inputs.wave }}" --arg status "${{ steps.verdict.outputs.status }}" \
+                --argjson failed "${{ steps.verdict.outputs.failed }}" --argjson total "${{ steps.verdict.outputs.total }}" \
+            '{type: "wave.completed", rolloutId: $id, wave: $wave, status: $status, failed: $failed, total: $total}' > event.json
+          .github/scripts/post-event.sh event.json
+
+      - name: Stop the rollout on a halted wave
+        if: steps.verdict.outputs.status == 'halted'
+        run: |
+          echo "::error::Wave ${{ inputs.wave }} halted: ${{ steps.verdict.outputs.failed }}/${{ steps.verdict.outputs.total }} accounts failed. The next wave will not start."
+          exit 1
